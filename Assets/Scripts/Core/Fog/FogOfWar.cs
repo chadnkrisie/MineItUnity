@@ -72,5 +72,22 @@ namespace MineIt.Fog
                     _discoveredBits[word] |= (1u << bit);
                 }
         }
+
+        public uint[] CopyDiscoveredBits()
+        {
+            var copy = new uint[_discoveredBits.Length];
+            Array.Copy(_discoveredBits, copy, _discoveredBits.Length);
+            return copy;
+        }
+
+        public void OverwriteDiscoveredBits(uint[] bits)
+        {
+            if (bits == null) return;
+
+            int n = Math.Min(bits.Length, _discoveredBits.Length);
+            Array.Clear(_discoveredBits, 0, _discoveredBits.Length);
+            Array.Copy(bits, _discoveredBits, n);
+        }
+
     }
 }

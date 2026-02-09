@@ -1,6 +1,9 @@
 using System.Text;
 using TMPro;
 using UnityEngine;
+using UnityEngine.UI;
+using MineIt.Inventory;
+using MineIt.Mining;
 
 namespace MineItUnity.Game
 {
@@ -13,6 +16,28 @@ namespace MineItUnity.Game
         [Header("References")]
         public GameController Controller;
         public TextMeshProUGUI HudText;
+
+        [Header("Bars (Optional UI Images)")]
+        [Tooltip("Parent GameObject for claim bar (enable/disable). Optional.")]
+        public GameObject ClaimBarRoot;
+
+        [Tooltip("Fill Image for claim bar (Image Type must be Filled / Horizontal). Optional.")]
+        public Image ClaimBarFill;
+
+        [Tooltip("Parent GameObject for scan cooldown bar (enable/disable). Optional.")]
+        public GameObject ScanBarRoot;
+
+        [Tooltip("Fill Image for scan cooldown bar (Image Type must be Filled / Horizontal). Optional.")]
+        public Image ScanBarFill;
+
+        [Tooltip("Parent GameObject for backpack bar. Optional.")]
+        public GameObject BackpackBarRoot;
+
+        [Tooltip("Fill Image for backpack bar (Image Type must be Filled / Horizontal). Optional.")]
+        public Image BackpackBarFill;
+
+        [Tooltip("If true, backpack bar only shows while extracting; otherwise it is always visible.")]
+        public bool ShowBackpackBarOnlyWhileExtracting = false;
 
         [Header("Update Rate")]
         [Tooltip("HUD refreshes at this rate (Hz). 10 is plenty and reduces allocations.")]
@@ -31,6 +56,9 @@ namespace MineItUnity.Game
         {
             if (Controller == null || Controller.Session == null || HudText == null)
                 return;
+
+            // Bars should update smoothly every frame (no allocations).
+            UpdateBars(Controller.Session);
 
             if (Time.unscaledTime < _nextUpdateTime)
                 return;
@@ -125,7 +153,42 @@ namespace MineItUnity.Game
 
             if (s.ExtractInProgress)
             {
-                _sb.Append("Extracting... (E to stop)").AppendLine();
+                // Rich extraction status
+                var d = s.Deposits.TryGetDepositById(s.ExtractTargetDepositId);
+
+                _sb.Append("EXTRACTING (E to stop)").AppendLine();
+
+                if (d != null)
+                {
+                    // Effective rate accounts for ore difficulty (matches core extraction math)
+                    double diff = OreCatalog.ExtractionDifficulty(d.OreTypeId);
+                    if (diff < 1e-6) diff = 1.0;
+
+                    double effRate = s.Player.ExtractorRateKgPerSec / diff;
+
+                    _sb.Append("  Ore: ").Append(d.OreTypeId)
+                       .Append("   Depth: ").Append(d.DepthMeters).Append("m")
+                       .AppendLine();
+
+                    _sb.Append("  Remaining: ").Append(d.RemainingUnits).Append(" units")
+                       .AppendLine();
+
+                    _sb.Append("  Rate: ").Append(effRate.ToString("0.00")).Append(" kg/s")
+                       .Append("   Carry: ").Append(s.ExtractKgRemainder.ToString("0.00")).Append(" kg")
+                       .AppendLine();
+
+                    if (s.Backpack != null && s.Backpack.CapacityKg > 1e-9)
+                    {
+                        double pct = (s.Backpack.CurrentKg / s.Backpack.CapacityKg) * 100.0;
+                        _sb.Append("  Backpack: ")
+                           .Append(pct.ToString("0")).Append("%")
+                           .AppendLine();
+                    }
+                }
+                else
+                {
+                    _sb.Append("  (target deposit not found)").AppendLine();
+                }
             }
 
             // Prompts
@@ -133,7 +196,19 @@ namespace MineItUnity.Game
                 _sb.Append("C to Claim").AppendLine();
 
             if (s.CanExtractNow && !s.ExtractInProgress)
+            {
                 _sb.Append("E to Extract").AppendLine();
+
+                // Show candidate details to reduce ambiguity
+                var cand = s.Deposits.TryGetDepositById(s.ExtractCandidateDepositId);
+                if (cand != null)
+                {
+                    _sb.Append("  Target: ").Append(cand.OreTypeId)
+                       .Append("   Depth ").Append(cand.DepthMeters).Append("m")
+                       .Append("   Remaining ").Append(cand.RemainingUnits).Append("u")
+                       .AppendLine();
+                }
+            }
 
             if (s.IsInTownZone)
             {
@@ -148,5 +223,80 @@ namespace MineItUnity.Game
                 _sb.Append("Last: ").Append(s.LastActionText).AppendLine();
             }
         }
+
+        private void UpdateBars(MineIt.Simulation.GameSession s)
+        {
+            // ---- Claim progress ----
+            if (ClaimBarRoot != null && ClaimBarFill != null)
+            {
+                bool active = s.ClaimInProgress;
+                if (ClaimBarRoot.activeSelf != active)
+                    ClaimBarRoot.SetActive(active);
+
+                if (active)
+                {
+                    // progress = 1 - remaining/total
+                    double total = MineIt.Simulation.GameSession.ClaimChannelTotalSeconds;
+                    double rem = s.ClaimChannelRemainingSeconds;
+
+                    float p = 0f;
+                    if (total > 1e-6)
+                        p = Mathf.Clamp01((float)(1.0 - (rem / total)));
+
+                    ClaimBarFill.fillAmount = p;
+                }
+                else
+                {
+                    ClaimBarFill.fillAmount = 0f;
+                }
+            }
+
+            // ---- Scan cooldown progress ----
+            if (ScanBarRoot != null && ScanBarFill != null)
+            {
+                // Show bar when cooling down; hide when ready.
+                bool cooling = s.ScanCooldownRemainingSeconds > 0.0 && s.ScanCooldownMaxSeconds > 1e-6;
+                if (ScanBarRoot.activeSelf != cooling)
+                    ScanBarRoot.SetActive(cooling);
+
+                if (cooling)
+                {
+                    // progress = 1 - remaining/max
+                    double p01 = 1.0 - (s.ScanCooldownRemainingSeconds / s.ScanCooldownMaxSeconds);
+                    ScanBarFill.fillAmount = Mathf.Clamp01((float)p01);
+                }
+                else
+                {
+                    ScanBarFill.fillAmount = 1f; // visually "ready" if you ever show it
+                }
+            }
+
+            // ---- Backpack fill (extraction feedback) ----
+            if (BackpackBarRoot != null && BackpackBarFill != null && s.Backpack != null)
+            {
+                bool active = ShowBackpackBarOnlyWhileExtracting ? s.ExtractInProgress : true;
+
+                if (BackpackBarRoot.activeSelf != active)
+                    BackpackBarRoot.SetActive(active);
+
+                if (active)
+                {
+                    double cap = s.Backpack.CapacityKg;
+                    double cur = s.Backpack.CurrentKg;
+
+                    float p = 0f;
+                    if (cap > 1e-9) p = Mathf.Clamp01((float)(cur / cap));
+
+                    BackpackBarFill.fillAmount = p;
+                }
+                else
+                {
+                    BackpackBarFill.fillAmount = 0f;
+                }
+            }
+
+        }
+
+
     }
 }

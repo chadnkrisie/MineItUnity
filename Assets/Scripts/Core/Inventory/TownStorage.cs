@@ -29,5 +29,29 @@ namespace MineIt.Inventory
             _oreUnits.Clear();
         }
 
+        public void LoadOreUnits(System.Collections.Generic.IEnumerable<MineIt.Save.StringIntPair> pairs)
+        {
+            Clear();
+            if (pairs == null) return;
+
+            foreach (var p in pairs)
+            {
+                if (p == null || string.IsNullOrEmpty(p.Key) || p.Value <= 0) continue;
+                AddOreUnits(p.Key, p.Value);
+            }
+        }
+
+        public void LoadOreUnits(System.Collections.Generic.IDictionary<string, int> oreUnits)
+        {
+            Clear();
+            if (oreUnits == null) return;
+
+            foreach (var kv in oreUnits)
+            {
+                if (kv.Value <= 0) continue;
+                AddOreUnits(kv.Key, kv.Value);
+            }
+        }
+
     }
 }

@@ -28,6 +28,32 @@ namespace MineIt.Simulation
         public int BackpackTier { get; private set; } = 1; // NEW: track tier explicitly
 
         public int Credits { get; private set; }   // NEW
+        /// <summary>
+        /// Attempts to spend credits. Returns true if successful.
+        /// </summary>
+        public bool TrySpendCredits(int amount)
+        {
+            if (amount <= 0)
+                return true;
+
+            if (Credits < amount)
+                return false;
+
+            Credits -= amount;
+            return true;
+        }
+
+        /// <summary>
+        /// Adds credits (use for rewards, sales, etc).
+        /// </summary>
+        public void AddCredits(int amount)
+        {
+            if (amount <= 0)
+                return;
+
+            Credits += amount;
+        }
+
 
         public TownStorage TownStorage { get; private set; } = null!;
 
@@ -93,7 +119,15 @@ namespace MineIt.Simulation
         public string LastActionText { get; private set; } = "";
         public double LastActionFlashSeconds { get; private set; }
 
+        public void PostStatus(string text, double seconds = 1.5)
+        {
+            LastActionText = text ?? "";
+            LastActionFlashSeconds = seconds;
+        }
+
         private int _seed;
+        public int Seed => _seed;
+
         private Random _scanRng = null!;
 
         // claim internal
@@ -171,7 +205,7 @@ namespace MineIt.Simulation
             _extractKgCarry = 0.0;
             ExtractKgRemainder = 0.0;
 
-            Credits = 0; // MVP start
+            Credits = 100; // MVP start
         }
 
         public void Update(double dtSeconds, InputSnapshot input)
@@ -827,6 +861,72 @@ namespace MineIt.Simulation
                 }
             }
         }
+
+        public void LoadFromSave(MineIt.Save.SaveGameData data)
+        {
+            if (data == null) return;
+
+            // Re-init deterministic session from seed
+            InitializeNewGame(data.Seed);
+
+            // Clock
+            // We only have Advance() currently; set via repeated advance is dumb.
+            // So: set using reflection-free direct assignment by adding a setter-like approach.
+            // Minimal: advance to target.
+            double target = data.TotalRealSeconds;
+            double cur = Clock.TotalRealSeconds;
+            if (target > cur)
+                Clock.Advance(target - cur);
+
+            // Player + upgrades
+            Player.PositionX = data.Player.PositionX;
+            Player.PositionY = data.Player.PositionY;
+
+            Player.DetectorTier = data.Player.DetectorTier;
+            Player.ExtractorTier = data.Player.ExtractorTier;
+
+            BackpackTier = data.Player.BackpackTier;
+            Credits = data.Player.Credits;
+
+            // Ensure backpack capacity matches tier (never invalidates current load)
+            double cap = MineIt.Inventory.UpgradeCatalog.BackpackCapacityKgForTier(BackpackTier);
+            Backpack.CapacityKg = cap;
+
+            // Inventory
+            Backpack.LoadOreUnits(data.BackpackOre);
+            TownStorage.LoadOreUnits(data.TownOre);
+
+            // Fog
+            if (!string.IsNullOrEmpty(data.FogDiscoveredBitsBase64))
+            {
+                byte[] bytes = Convert.FromBase64String(data.FogDiscoveredBitsBase64);
+                uint[] bits = new uint[(bytes.Length + 3) / 4];
+                Buffer.BlockCopy(bytes, 0, bits, 0, Math.Min(bytes.Length, bits.Length * 4));
+                Fog.OverwriteDiscoveredBits(bits);
+            }
+
+            // Deposits: apply mutable deltas (chunks/deposits exist as they are loaded)
+            // Ensure active chunks are loaded so at least local deposits exist
+            Chunks.EnsureActiveRadius(Player.PositionX, Player.PositionY, ActiveChunkRadius);
+            PopulateDepositsForActiveChunks();
+
+            foreach (var sd in data.Deposits)
+            {
+                var d = Deposits.TryGetDepositById(sd.DepositId);
+                if (d == null) continue;
+
+                d.RemainingUnits = sd.RemainingUnits;
+                d.ClaimedByPlayer = sd.ClaimedByPlayer;
+                d.ClaimedByNpcId = (sd.ClaimedByNpcId >= 0) ? sd.ClaimedByNpcId : (int?)null;
+                d.DiscoveredByPlayer = sd.DiscoveredByPlayer;
+            }
+
+            LastActionText = "LOAD OK";
+            LastActionFlashSeconds = 1.5;
+        }
+
+
+
 
 
     }

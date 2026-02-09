@@ -65,5 +65,49 @@ namespace MineIt.Inventory
             _oreUnits.Clear();
             CurrentKg = 0.0;
         }
+
+        public void LoadOreUnits(System.Collections.Generic.IEnumerable<MineIt.Save.StringIntPair> pairs)
+        {
+            Clear();
+            if (pairs == null) return;
+
+            foreach (var p in pairs)
+            {
+                if (p == null || string.IsNullOrEmpty(p.Key) || p.Value <= 0) continue;
+
+                _oreUnits[p.Key] = p.Value;
+
+                double unitKg = OreCatalog.UnitMassKg(p.Key);
+                if (unitKg <= 0) unitKg = 1.0;
+                CurrentKg += p.Value * unitKg;
+            }
+
+            if (CurrentKg > CapacityKg) CurrentKg = CapacityKg;
+        }
+
+        public void LoadOreUnits(System.Collections.Generic.IDictionary<string, int> oreUnits)
+        {
+            Clear();
+
+            if (oreUnits == null) return;
+
+            foreach (var kv in oreUnits)
+            {
+                string oreId = kv.Key;
+                int units = kv.Value;
+                if (units <= 0) continue;
+
+                // Bypass clamping because save data should be authoritative.
+                _oreUnits[oreId] = units;
+
+                double unitKg = OreCatalog.UnitMassKg(oreId);
+                if (unitKg <= 0) unitKg = 1.0;
+                CurrentKg += units * unitKg;
+            }
+
+            // Never exceed capacity; keep deterministic and safe
+            if (CurrentKg > CapacityKg) CurrentKg = CapacityKg;
+        }
+
     }
 }
