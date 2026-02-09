@@ -1,4 +1,4 @@
-using System.Text;
+﻿using System.Text;
 using TMPro;
 using UnityEngine;
 using UnityEngine.UI;
@@ -120,9 +120,44 @@ namespace MineItUnity.Game
                .Append("   ").Append(exRate.ToString("0.0")).Append("kg/s")
                .AppendLine();
 
-            // Scan info
-            int hits = s.LastScanResults != null ? s.LastScanResults.Count : 0;
-            _sb.Append("Last Scan Hits: ").Append(hits).AppendLine();
+            // Scan intelligence
+            var results = s.LastScanResults;
+            int hits = results != null ? results.Count : 0;
+            _sb.Append("Scan Hits: ").Append(hits).AppendLine();
+
+            if (results != null && results.Count > 0)
+            {
+                int show = Mathf.Min(3, results.Count);
+
+                for (int i = 0; i < show; i++)
+                {
+                    var r = results[i];
+
+                    int dx = r.CenterTx - pTx;
+                    int dy = r.CenterTy - pTy;
+                    int dist = Mathf.RoundToInt(Mathf.Sqrt(dx * dx + dy * dy));
+
+                    bool npcMining = false;
+                    var dep = s.Deposits.TryGetDepositById(r.DepositId);
+                    if (dep != null && dep.ClaimedByNpcId.HasValue)
+                        npcMining = true;
+
+                    _sb.Append(i == 0 ? "▶ " : "  ");
+                    _sb.Append(r.OreTypeId.ToUpper())
+                       .Append("  ")
+                       .Append(r.EstimatedSizeClass)
+                       .Append("  ")
+                       .Append(dist).Append("t");
+
+                    if (npcMining)
+                        _sb.Append("  NPC");
+
+                    if (r.DepthMeters > s.Player.DetectorMaxDepthMeters)
+                        _sb.Append("  DEEP");
+
+                    _sb.AppendLine();
+                }
+            }
 
             // Backpack + Credits
             if (s.Backpack != null)
@@ -173,6 +208,16 @@ namespace MineItUnity.Game
                     _sb.Append("  Remaining: ").Append(d.RemainingUnits).Append(" units")
                        .AppendLine();
 
+                    // --- Depletion ETA (player extraction) ---
+                    double rate = s.Player.ExtractorRateKgPerSec /
+                                  MineIt.Inventory.OreCatalog.ExtractionDifficulty(d.OreTypeId);
+
+                    double etaSec = d.EstimateSecondsToDeplete(rate);
+
+                    _sb.Append("  ETA: ")
+                       .Append(FormatEta(etaSec))
+                       .AppendLine();
+
                     _sb.Append("  Rate: ").Append(effRate.ToString("0.00")).Append(" kg/s")
                        .Append("   Carry: ").Append(s.ExtractKgRemainder.ToString("0.00")).Append(" kg")
                        .AppendLine();
@@ -190,6 +235,47 @@ namespace MineItUnity.Game
                     _sb.Append("  (target deposit not found)").AppendLine();
                 }
             }
+
+            // --- NPC mining feedback (for discovered deposits) ---
+            foreach (var ch in s.Chunks.GetLoadedChunks())
+            {
+                foreach (var dep in ch.Deposits)
+                {
+                    if (!dep.DiscoveredByPlayer) continue;
+                    if (!dep.ClaimedByNpcId.HasValue) continue;
+                    if (dep.RemainingUnits <= 0) continue;
+
+                    NpcMinerManager.NpcMiner npc = null;
+
+                    var npcList = s.Npcs?.Npcs;
+                    if (npcList == null) continue;
+
+                    for (int i = 0; i < npcList.Count; i++)
+                    {
+                        if (npcList[i].NpcId == dep.ClaimedByNpcId.Value)
+                        {
+                            npc = npcList[i];
+                            break;
+                        }
+                    }
+
+                    if (npc == null) continue;
+
+                    double rate = s.Npcs.GetNpcExtractionRateKgPerSec(npc, dep.OreTypeId);
+                    double eta = dep.EstimateSecondsToDeplete(rate);
+
+                    _sb.Append("NPC mining ")
+                       .Append(dep.OreTypeId)
+                       .Append(" — ETA ")
+                       .Append(FormatEta(eta))
+                       .AppendLine();
+
+                    // Show only one NPC line to avoid spam
+                    return;
+                }
+            }
+
+
 
             // Prompts
             if (s.CanClaimNow && !s.ClaimInProgress)
@@ -222,6 +308,19 @@ namespace MineItUnity.Game
             {
                 _sb.Append("Last: ").Append(s.LastActionText).AppendLine();
             }
+        }
+
+        private static string FormatEta(double seconds)
+        {
+            if (double.IsInfinity(seconds)) return "∞";
+            if (seconds <= 0) return "0s";
+
+            if (seconds < 60)
+                return $"{Mathf.CeilToInt((float)seconds)}s";
+
+            int mins = Mathf.FloorToInt((float)(seconds / 60.0));
+            int secs = Mathf.CeilToInt((float)(seconds - mins * 60));
+            return $"{mins}m {secs:00}s";
         }
 
         private void UpdateBars(MineIt.Simulation.GameSession s)

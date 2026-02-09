@@ -63,9 +63,10 @@ namespace MineIt.Mining
             }
         }
 
-        public Deposit? TryGetDepositById(int depositId)
+        public Deposit TryGetDepositById(int depositId)
         {
-            return _allDeposits.TryGetValue(depositId, out var d) ? d : null;
+            _allDeposits.TryGetValue(depositId, out var d);
+            return d;
         }
 
         public List<ScanResult> Scan(
@@ -266,18 +267,20 @@ namespace MineIt.Mining
             // Replace in manager dictionary
             _allDeposits[d.DepositId] = d;
 
-            // Replace in chunk list (by id)
-            for (int i = 0; i < chunk.Deposits.Count; i++)
+            // Replace in chunk list (by id) — CORE-ONLY mutable access
+            var list = chunk.DepositsMutable;
+
+            for (int i = 0; i < list.Count; i++)
             {
-                if (chunk.Deposits[i].DepositId == d.DepositId)
+                if (list[i].DepositId == d.DepositId)
                 {
-                    chunk.Deposits[i] = d;
+                    list[i] = d;
                     return;
                 }
             }
 
-            chunk.Deposits.Add(d);
+            // Not found → add
+            list.Add(d);
         }
-
     }
 }

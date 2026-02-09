@@ -1,7 +1,8 @@
-using UnityEngine;
-using UnityEngine.UI;
+ï»¿using MineIt.Mining;
 using MineIt.Simulation;
 using TMPro;
+using UnityEngine;
+using UnityEngine.UI;
 
 namespace MineItUnity.Game.Map
 {
@@ -52,6 +53,13 @@ namespace MineItUnity.Game.Map
         public Color32 WaypointColor = new Color32(80, 170, 255, 255); // blue
         public int WaypointDotRadius = 3;
 
+        [Header("Deposit Click Waypoint")]
+        public bool DepositClickSetsWaypoint = true;
+
+        [Tooltip("How close (in tiles) a click must be to a deposit center to count as clicking it.")]
+        public int DepositClickRadiusTiles = 5;
+
+
         [Header("Town")]
         public bool ShowTownMarker = true;
         public Color32 TownColor = new Color32(255, 220, 60, 255); // yellow
@@ -72,6 +80,9 @@ namespace MineItUnity.Game.Map
         [Header("Marker Sizes")]
         [Tooltip("Radius in pixels for the player dot.")]
         public int PlayerDotRadius = 2;
+
+        [Header("Depletion Warning")]
+        public double DepletionWarningSeconds = 120.0; // 2 minutes
 
         [Tooltip("Radius in pixels for deposit dots.")]
         public int DepositDotRadius = 2;
@@ -132,7 +143,17 @@ namespace MineItUnity.Game.Map
                 if (UnityEngine.Input.GetMouseButtonDown(0))
                 {
                     if (TryGetMapTileUnderMouse(out int tx, out int ty))
-                        Waypoints.SetWaypoint(tx, ty);
+                    {
+                        // Prefer deposit click waypoint to deposit center
+                        if (DepositClickSetsWaypoint && TryFindNearestDepositUnderClick(Controller.Session, tx, ty, out int dTx, out int dTy))
+                        {
+                            Waypoints.SetWaypoint(dTx, dTy);
+                        }
+                        else
+                        {
+                            Waypoints.SetWaypoint(tx, ty);
+                        }
+                    }
                 }
                 else if (UnityEngine.Input.GetMouseButtonDown(1))
                 {
@@ -267,7 +288,7 @@ namespace MineItUnity.Game.Map
             // 1) Base layer: fog states
             // We render in texture coords where (0,0) is bottom-left.
             // Our fog queries are (tx,ty) with ty increasing downward in your core semantics,
-            // but since you’ve already adapted Y semantics for movement/rendering, we’ll keep
+            // but since youâ€™ve already adapted Y semantics for movement/rendering, weâ€™ll keep
             // the mapping direct: (tx,ty) -> pixel (tx,ty). If you want Y flipped visually,
             // we can do it with one line change.
             for (int ty = 0; ty < h; ty++)
@@ -299,7 +320,39 @@ namespace MineItUnity.Game.Map
                 else if (d.ClaimedByNpcId.HasValue) dc = DepositNpc;
                 else dc = DepositUnclaimed;
 
-                DrawDot(w, h, d.CenterTx, d.CenterTy, DepositDotRadius, dc);
+                Color32 finalColor = dc;
+
+                // If NPC-claimed and nearly depleted darken / redden
+                if (d.ClaimedByNpcId.HasValue && d.RemainingUnits > 0)
+                {
+                    NpcMinerManager.NpcMiner npc = null;
+
+                    var npcList = s.Npcs?.Npcs;
+                    if (npcList != null)
+                    {
+                        for (int i = 0; i < npcList.Count; i++)
+                        {
+                            if (npcList[i].NpcId == d.ClaimedByNpcId.Value)
+                            {
+                                npc = npcList[i];
+                                break;
+                            }
+                        }
+                    }
+
+                    if (npc != null)
+                    {
+                        double rate = s.Npcs.GetNpcExtractionRateKgPerSec(npc, d.OreTypeId);
+                        double eta = d.EstimateSecondsToDeplete(rate);
+
+                        if (eta <= DepletionWarningSeconds)
+                        {
+                            finalColor = new Color32(200, 40, 40, 255); // urgent red
+                        }
+                    }
+                }
+
+                DrawDot(w, h, d.CenterTx, d.CenterTy, DepositDotRadius, finalColor);
             }
 
             // 3) Town marker (always visible on map; tweak rule later if desired)
@@ -349,20 +402,57 @@ namespace MineItUnity.Game.Map
             }
         }
 
+        private bool TryFindNearestDepositUnderClick(GameSession s, int clickTx, int clickTy, out int depositTx, out int depositTy)
+        {
+            depositTx = depositTy = 0;
+            if (s == null) return false;
+
+            int r = Mathf.Max(0, DepositClickRadiusTiles);
+            int r2 = r * r;
+
+            int bestDist2 = int.MaxValue;
+            int bestTx = 0, bestTy = 0;
+            bool found = false;
+
+            foreach (var d in s.Deposits.GetAllDeposits())
+            {
+                if (!d.DiscoveredByPlayer) continue;
+                if (d.RemainingUnits <= 0) continue;
+
+                int dx = d.CenterTx - clickTx;
+                int dy = d.CenterTy - clickTy;
+                int dist2 = dx * dx + dy * dy;
+
+                if (dist2 <= r2 && dist2 < bestDist2)
+                {
+                    bestDist2 = dist2;
+                    bestTx = d.CenterTx;
+                    bestTy = d.CenterTy;
+                    found = true;
+                }
+            }
+
+            if (!found) return false;
+
+            depositTx = bestTx;
+            depositTy = bestTy;
+            return true;
+        }
+
         private string BuildLegendString()
         {
             // Text-only legend. Colors are represented by words; UI colors are already visible on the map.
             // Keep it short so it reads at a glance.
             return
                 "MAP LEGEND\n" +
-                "• White: You\n" +
-                "• Yellow: Town\n" +
-                "• Cyan: Unclaimed Deposit\n" +
-                "• Green: Your Claim\n" +
-                "• Orange: NPC Claim\n" +
-                "• Gray: Explored\n" +
-                "• Black: Unknown\n" +
-                "• Blue: Waypoint\n";
+                "â€¢ White: You\n" +
+                "â€¢ Yellow: Town\n" +
+                "â€¢ Cyan: Unclaimed Deposit\n" +
+                "â€¢ Green: Your Claim\n" +
+                "â€¢ Orange: NPC Claim\n" +
+                "â€¢ Gray: Explored\n" +
+                "â€¢ Black: Unknown\n" +
+                "â€¢ Blue: Waypoint\n";
         }
 
     }

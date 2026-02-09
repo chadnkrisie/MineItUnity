@@ -18,10 +18,32 @@ namespace MineIt.Save
         public List<StringIntPair> TownOre = new List<StringIntPair>();
 
         public List<DepositSaveData> Deposits = new List<DepositSaveData>();
+        public List<NpcMinerSaveData> NpcMiners = new List<NpcMinerSaveData>();
 
         // Base64 of uint[] discovered bitset
         public string FogDiscoveredBitsBase64 = "";
+
+        // ===== Waypoint persistence (Unity-owned state, saved here) =====
+        public bool HasWaypoint;
+        public int WaypointTx;
+        public int WaypointTy;
     }
+
+    [Serializable]
+    public sealed class NpcMinerSaveData
+    {
+        public int NpcId;
+        public int Tier;
+
+        public int TargetDepositId;
+
+        public double DecisionCooldownRemainingSeconds;
+        public double DecisionCooldownMinSeconds;
+        public double DecisionCooldownMaxSeconds;
+
+        public double ExtractKgCarry;
+    }
+
 
     [Serializable]
     public sealed class PlayerSaveData

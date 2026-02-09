@@ -6,13 +6,13 @@ namespace MineIt.Save
 {
     public static class SaveGameSerializer
     {
-        public static string SaveToJson(GameSession s)
+        public static SaveGameData SaveToData(GameSession s)
         {
             if (s == null) throw new ArgumentNullException(nameof(s));
 
             var data = new SaveGameData
             {
-                Version = 1,
+                Version = 2, // bumped because format added waypoint fields
                 Seed = s.Seed,
                 TotalRealSeconds = s.Clock.TotalRealSeconds
             };
@@ -54,14 +54,33 @@ namespace MineIt.Save
                 });
             }
 
+            // NPC miners (Phase 1)
+            data.NpcMiners.Clear();
+            if (s.Npcs != null)
+            {
+                s.Npcs.SaveTo(data.NpcMiners);
+            }
+
             // Fog discovered bits (uint[] -> byte[] -> base64)
             var bits = s.Fog.CopyDiscoveredBits();
             byte[] bytes = new byte[bits.Length * sizeof(uint)];
             Buffer.BlockCopy(bits, 0, bytes, 0, bytes.Length);
             data.FogDiscoveredBitsBase64 = Convert.ToBase64String(bytes);
 
-            // Pretty print = true for readability
-            return JsonUtility.ToJson(data, prettyPrint: true);
+            return data;
+        }
+
+        public static string ToJson(SaveGameData data, bool prettyPrint = true)
+        {
+            if (data == null) throw new ArgumentNullException(nameof(data));
+            return JsonUtility.ToJson(data, prettyPrint: prettyPrint);
+        }
+
+        // Back-compat wrapper (existing callers still work)
+        public static string SaveToJson(GameSession s)
+        {
+            var data = SaveToData(s);
+            return ToJson(data, prettyPrint: true);
         }
 
         public static SaveGameData LoadFromJson(string json)

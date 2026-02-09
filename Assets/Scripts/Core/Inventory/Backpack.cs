@@ -66,6 +66,33 @@ namespace MineIt.Inventory
             CurrentKg = 0.0;
         }
 
+        /// <summary>
+        /// Transfers all ore units to town storage, then clears the backpack.
+        /// Deterministic, allocation-light, and avoids repeated logic in GameSession.
+        /// </summary>
+        public int TransferAllTo(TownStorage town)
+        {
+            if (town == null) return 0;
+
+            if (_oreUnits.Count == 0)
+                return 0;
+
+            int movedStacks = 0;
+
+            foreach (var kv in _oreUnits)
+            {
+                int units = kv.Value;
+                if (units <= 0) continue;
+
+                town.AddOreUnits(kv.Key, units);
+                movedStacks++;
+            }
+
+            Clear();
+            return movedStacks;
+        }
+
+
         public void LoadOreUnits(System.Collections.Generic.IEnumerable<MineIt.Save.StringIntPair> pairs)
         {
             Clear();

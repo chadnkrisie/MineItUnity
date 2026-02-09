@@ -29,6 +29,33 @@ namespace MineIt.Inventory
             _oreUnits.Clear();
         }
 
+        /// <summary>
+        /// Computes total credits for all stored ore using OreCatalog prices, then clears storage.
+        /// Returns (creditsGained, stacksSold).
+        /// Deterministic, single-pass, and centralizes sell logic.
+        /// </summary>
+        public (int creditsGained, int stacksSold) ComputeSaleValueAndClear()
+        {
+            if (_oreUnits.Count == 0)
+                return (0, 0);
+
+            int totalCredits = 0;
+            int stacks = 0;
+
+            foreach (var kv in _oreUnits)
+            {
+                int units = kv.Value;
+                if (units <= 0) continue;
+
+                int price = OreCatalog.BasePricePerUnit(kv.Key);
+                totalCredits += units * price;
+                stacks++;
+            }
+
+            Clear();
+            return (totalCredits, stacks);
+        }
+
         public void LoadOreUnits(System.Collections.Generic.IEnumerable<MineIt.Save.StringIntPair> pairs)
         {
             Clear();

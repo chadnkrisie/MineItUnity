@@ -2,7 +2,7 @@
 using MineIt.Simulation;
 using MineIt.Input;
 using System.IO;
-// VS git flow test
+using MineItUnity.Game.Map;
 
 namespace MineItUnity.Game
 {
@@ -16,6 +16,9 @@ namespace MineItUnity.Game
 
         private Transform _playerMarker = null!;
 
+        [Header("Optional References")]
+        public WaypointManager Waypoints;
+
         private void Awake()
         {
             Screen.fullScreenMode = FullScreenMode.FullScreenWindow;
@@ -25,6 +28,9 @@ namespace MineItUnity.Game
 
             _session = new GameSession();
             _session.InitializeNewGame(seed: 12345);
+
+            if (Waypoints == null)
+                Waypoints = FindObjectOfType<WaypointManager>();
 
             // Simple player marker (placeholder sprite)
             var go = new GameObject("PlayerMarker");
@@ -112,7 +118,23 @@ namespace MineItUnity.Game
         {
             try
             {
-                string json = MineIt.Save.SaveGameSerializer.SaveToJson(_session);
+                var data = MineIt.Save.SaveGameSerializer.SaveToData(_session);
+
+                // Waypoint persistence (Unity-owned)
+                if (Waypoints != null && Waypoints.HasWaypoint)
+                {
+                    data.HasWaypoint = true;
+                    data.WaypointTx = Waypoints.WaypointTx;
+                    data.WaypointTy = Waypoints.WaypointTy;
+                }
+                else
+                {
+                    data.HasWaypoint = false;
+                    data.WaypointTx = 0;
+                    data.WaypointTy = 0;
+                }
+
+                string json = MineIt.Save.SaveGameSerializer.ToJson(data, prettyPrint: true);
                 System.IO.File.WriteAllText(SavePath, json);
 
                 _session.PostStatus($"SAVE OK ({SavePath})", 1.5);
@@ -139,6 +161,16 @@ namespace MineItUnity.Game
                 _session.LoadFromSave(data);
 
                 _session.PostStatus("LOAD OK", 1.5);
+
+                // Restore waypoint (Unity-owned)
+                if (Waypoints != null)
+                {
+                    if (data.HasWaypoint)
+                        Waypoints.SetWaypoint(data.WaypointTx, data.WaypointTy);
+                    else
+                        Waypoints.ClearWaypoint();
+                }
+
             }
             catch (System.Exception ex)
             {

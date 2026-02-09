@@ -22,6 +22,11 @@ namespace MineIt.Simulation
         public FogOfWar Fog { get; private set; } = null!;
         public DepositManager Deposits { get; private set; } = null!;
 
+        public NpcMinerManager Npcs { get; private set; } = null!;
+
+        // MVP tuning: start small; you can raise later
+        public int NpcMinerCount { get; set; } = 12;
+
         // ===== Inventory (NEW - MVP) =====
         public Backpack Backpack { get; private set; } = null!;
 
@@ -54,6 +59,127 @@ namespace MineIt.Simulation
             Credits += amount;
         }
 
+        // ===== Town actions (sanctioned methods Unity UI may call) =====
+
+        public bool TryDepositBackpackToTown(out int movedStacks)
+        {
+            movedStacks = 0;
+
+            if (!IsInTownZone)
+            {
+                PostStatus("DEPOSIT FAILED (not in town)", 1.5);
+                return false;
+            }
+
+            movedStacks = Backpack.TransferAllTo(TownStorage);
+
+            PostStatus(movedStacks > 0 ? "DEPOSIT OK" : "DEPOSIT (nothing)", 1.5);
+            return true;
+        }
+
+        public bool TrySellTownOre(out int creditsGained, out int stacksSold)
+        {
+            creditsGained = 0;
+            stacksSold = 0;
+
+            if (!IsInTownZone)
+            {
+                PostStatus("SELL FAILED (not in town)", 1.5);
+                return false;
+            }
+
+            var result = TownStorage.ComputeSaleValueAndClear();
+            creditsGained = result.creditsGained;
+            stacksSold = result.stacksSold;
+
+            if (creditsGained > 0)
+            {
+                Credits += creditsGained;
+                PostStatus($"SOLD {stacksSold} STACKS  +{creditsGained} cr", 1.5);
+                return true;
+            }
+
+            PostStatus("SELL (nothing)", 1.5);
+            return true;
+        }
+
+        public bool TryBuyDetectorTier(int desiredTier)
+        {
+            if (!IsInTownZone)
+            {
+                PostStatus("UPGRADE BLOCKED (not in town)", 1.5);
+                return false;
+            }
+
+            if (desiredTier <= Player.DetectorTier)
+                return false;
+
+            int cost = MineIt.Inventory.UpgradeCatalog.DetectorPriceForTier(desiredTier);
+            if (Credits < cost)
+            {
+                PostStatus($"NEED {cost} cr for Detector T{desiredTier}", 1.5);
+                return false;
+            }
+
+            Credits -= cost;
+            Player.DetectorTier = desiredTier;
+            PostStatus($"BOUGHT Detector T{desiredTier}  -{cost} cr", 1.5);
+            return true;
+        }
+
+        public bool TryBuyExtractorTier(int desiredTier)
+        {
+            if (!IsInTownZone)
+            {
+                PostStatus("UPGRADE BLOCKED (not in town)", 1.5);
+                return false;
+            }
+
+            if (desiredTier <= Player.ExtractorTier)
+                return false;
+
+            int cost = MineIt.Inventory.UpgradeCatalog.ExtractorPriceForTier(desiredTier);
+            if (Credits < cost)
+            {
+                PostStatus($"NEED {cost} cr for Extractor T{desiredTier}", 1.5);
+                return false;
+            }
+
+            Credits -= cost;
+            Player.ExtractorTier = desiredTier;
+            PostStatus($"BOUGHT Extractor T{desiredTier}  -{cost} cr", 1.5);
+            return true;
+        }
+
+        public bool TryBuyBackpackTier(int desiredTier)
+        {
+            if (!IsInTownZone)
+            {
+                PostStatus("UPGRADE BLOCKED (not in town)", 1.5);
+                return false;
+            }
+
+            if (desiredTier <= BackpackTier)
+                return false;
+
+            int cost = MineIt.Inventory.UpgradeCatalog.BackpackPriceForTier(desiredTier);
+            if (Credits < cost)
+            {
+                PostStatus($"NEED {cost} cr for Backpack T{desiredTier}", 1.5);
+                return false;
+            }
+
+            Credits -= cost;
+            BackpackTier = desiredTier;
+
+            double cap = MineIt.Inventory.UpgradeCatalog.BackpackCapacityKgForTier(desiredTier);
+            Backpack.CapacityKg = System.Math.Max(cap, Backpack.CurrentKg);
+
+            PostStatus($"BOUGHT Backpack T{desiredTier} ({Backpack.CapacityKg:0}kg)  -{cost} cr", 1.5);
+            return true;
+        }
+
+
 
         public TownStorage TownStorage { get; private set; } = null!;
 
@@ -82,10 +208,10 @@ namespace MineIt.Simulation
         public int ActiveChunkRadius { get; set; } = 3;
 
         // ===== UI feedback events (WPF subscribes; core remains audio-agnostic) =====
-        public event Action? ScanExecuted;   // fires ONLY when scan actually runs
-        public event Action? ScanDud;        // fires when scan pressed but blocked (cooldown)
-        public event Action? ClaimSucceeded; // fires ONLY when claim completes successfully
-        public event Action? ClaimFailed;    // fires when claim cannot be started / is canceled / etc.
+        public event Action ScanExecuted;   // fires ONLY when scan actually runs
+        public event Action ScanDud;        // fires when scan pressed but blocked (cooldown)
+        public event Action ClaimSucceeded; // fires ONLY when claim completes successfully
+        public event Action ClaimFailed;    // fires when claim cannot be started / is canceled / etc.
 
         // ===== Scan debug / HUD fields =====
         public List<ScanResult> LastScanResults { get; private set; } = new List<ScanResult>();
@@ -139,6 +265,16 @@ namespace MineIt.Simulation
         private int _extractTargetDepositId; // 0 means none
         private double _extractKgCarry;      // fractional kg carry to avoid loss
 
+        private struct MovementStep
+        {
+            public double Vx;
+            public double Vy;
+            public bool MovedThisFrame;
+
+            public int PlayerTx;
+            public int PlayerTy;
+        }
+
         public void InitializeNewGame(int seed)
         {
             _seed = seed;
@@ -147,6 +283,10 @@ namespace MineIt.Simulation
             Chunks = new ChunkManager(seed, WORLD_W_TILES, WORLD_H_TILES, cacheMaxChunks: 256);
             Fog = new FogOfWar(WORLD_W_TILES, WORLD_H_TILES);
             Deposits = new DepositManager(seed);
+
+            Npcs = new NpcMinerManager(seed);
+            Npcs.InitializeMvpNpcSet(NpcMinerCount);
+
             BackpackTier = 1;
             Backpack = new Backpack { CapacityKg = UpgradeCatalog.BackpackCapacityKgForTier(BackpackTier) };
             TownStorage = new TownStorage();
@@ -210,12 +350,56 @@ namespace MineIt.Simulation
 
         public void Update(double dtSeconds, InputSnapshot input)
         {
+            // 0) Global time
             Clock.Advance(dtSeconds);
 
+            // 1) Streaming & deposits (must happen early so reads are valid)
+            StepChunkStreamingAndDeposits();
+
+            // 2) Movement (authoritative)
+            MovementStep mv = StepMovement(dtSeconds, input);
+
+            // 3) Town zone (must be computed BEFORE any town-gated actions)
+            StepTownZone(mv.PlayerTx, mv.PlayerTy);
+
+            // 4) Town actions (upgrade / deposit / sell). Uses IsInTownZone.
+            StepTownActions(input);
+
+            // 5) Fog (depends on position + clock)
+            StepFog(mv.PlayerTx, mv.PlayerTy);
+
+            // 6) Candidate prompts (depends on updated deposits + position)
+            StepCandidates(mv.PlayerTx, mv.PlayerTy);
+
+            // 7) Scan / Claim / Extract inputs
+            StepScan(input, mv.PlayerTx, mv.PlayerTy);
+            StepClaimInput(input, mv.PlayerTx, mv.PlayerTy);
+            StepExtractInput(input);
+
+            // 8) Claim / Extract ticks (continuous behaviors)
+            StepClaimTick(dtSeconds, mv.PlayerTx, mv.PlayerTy, mv.MovedThisFrame);
+            StepExtractTick(dtSeconds, mv.PlayerTx, mv.PlayerTy, mv.MovedThisFrame);
+
+            // 8.5) NPC miners (headless competition)
+            StepNpcMiners(dtSeconds);
+
+            // 9) Timers
+            StepTimers(dtSeconds);
+
+
+            // 9) Timers
+            StepTimers(dtSeconds);
+        }
+
+        private void StepChunkStreamingAndDeposits()
+        {
             // Ensure chunk streaming around player/camera
             Chunks.EnsureActiveRadius(Player.PositionX, Player.PositionY, ActiveChunkRadius);
             PopulateDepositsForActiveChunks();
+        }
 
+        private MovementStep StepMovement(double dtSeconds, InputSnapshot input)
+        {
             // ----- Movement -----
             double vx = 0, vy = 0;
             if (input.MoveUp) vy -= 1;
@@ -235,19 +419,37 @@ namespace MineIt.Simulation
             Player.PositionX = nextX;
             Player.PositionY = nextY;
 
-            // Player tile coords for this frame (compute ONCE and reuse)
             int playerTx = (int)Math.Floor(Player.PositionX);
             int playerTy = (int)Math.Floor(Player.PositionY);
 
+            bool movedThisFrame = (Math.Abs(vx) > 1e-9) || (Math.Abs(vy) > 1e-9);
+
+            return new MovementStep
+            {
+                Vx = vx,
+                Vy = vy,
+                MovedThisFrame = movedThisFrame,
+                PlayerTx = playerTx,
+                PlayerTy = playerTy
+            };
+        }
+
+        private void StepTownZone(int playerTx, int playerTy)
+        {
+            int dxT = playerTx - TownCenterTx;
+            int dyT = playerTy - TownCenterTy;
+            IsInTownZone = (dxT * dxT + dyT * dyT) <= TownRadiusTiles * TownRadiusTiles;
+        }
+
+        private void StepTownActions(InputSnapshot input)
+        {
             // ----- Upgrade hotkeys (town-only, costs Credits) -----
-            // Hotkeys are one-frame commands routed via InputSnapshot (UI does not mutate state directly).
             if (IsInTownZone)
             {
                 TryPurchaseUpgrades(input);
             }
             else
             {
-                // If player presses upgrade keys outside town, give feedback (optional but useful)
                 if ((input.DevSetDetectorTier is >= 1 and <= 5) ||
                     (input.DevSetExtractorTier is >= 1 and <= 5) ||
                     (input.DevSetBackpackTier is >= 1 and <= 5))
@@ -257,93 +459,7 @@ namespace MineIt.Simulation
                 }
             }
 
-
-            // Town zone (temporary MVP)
-            {
-                int dxT = playerTx - TownCenterTx;
-                int dyT = playerTy - TownCenterTy;
-                IsInTownZone = (dxT * dxT + dyT * dyT) <= TownRadiusTiles * TownRadiusTiles;
-            }
-
-            // ----- Fog-of-war -----
-            Fog.ClearVisibleNow();
-            int vision = Clock.IsNight ? 6 : 9; // MVP: no equipped light yet
-            Fog.RevealCircle(playerTx, playerTy, vision);
-
-            // ----- Compute claim candidate for HUD prompt (NEW) -----
-            ComputeClaimCandidate(playerTx, playerTy);
-            // ----- Compute extract candidate for HUD prompt (NEW) -----
-            ComputeExtractCandidate(playerTx, playerTy);
-
-
-            // ----- Scan action -----
-            if (input.ScanPressed)
-            {
-                bool scanExecuted = false;
-
-                if (ScanCooldownRemainingSeconds <= 0.0)
-                {
-                    // Execute scan
-                    LastScanCenterTx = playerTx;
-                    LastScanCenterTy = playerTy;
-                    LastScanRadiusTiles = Player.DetectorRadiusTiles;
-                    LastScanFlashSeconds = 0.35;
-
-                    LastScanResults = Deposits.Scan(
-                        Chunks,
-                        scanCenterTx: playerTx,
-                        scanCenterTy: playerTy,
-                        radiusTiles: Player.DetectorRadiusTiles,
-                        maxDepthMeters: Player.DetectorMaxDepthMeters,
-                        sizeNoiseTiers: Player.DetectorSizeNoiseTiers,
-                        rng: _scanRng);
-
-                    foreach (var sr in LastScanResults)
-                        MarkDepositDiscoveredById(sr.DepositId);
-
-                    ScanCooldownRemainingSeconds = Player.DetectorCooldownSeconds;
-                    scanExecuted = true;
-
-                    LastActionText = $"SCAN OK  hits={LastScanResults.Count}";
-                    LastActionFlashSeconds = 1.5;
-                }
-                else
-                {
-                    LastActionText = $"SCAN BLOCKED  cd={ScanCooldownRemainingSeconds:0.0}s";
-                    LastActionFlashSeconds = 1.5;
-                }
-
-                if (scanExecuted) ScanExecuted?.Invoke();
-                else ScanDud?.Invoke();
-            }
-
-            // ----- Claim input (NEW: starts/cancels 3-second channel) -----
-            if (input.ClaimPressed)
-            {
-                if (ClaimInProgress)
-                {
-                    // Toggle cancel
-                    CancelClaim("CLAIM CANCELED");
-                    ClaimFailed?.Invoke();
-                }
-                else
-                {
-                    // Start only if candidate exists
-                    if (CanClaimNow && ClaimCandidateDepositId != 0)
-                    {
-                        StartClaim(playerTx, playerTy, ClaimCandidateDepositId);
-                        LastActionText = "CLAIM START";
-                        LastActionFlashSeconds = 1.5;
-                    }
-                    else
-                    {
-                        LastActionText = "CLAIM FAILED (not in range)";
-                        LastActionFlashSeconds = 1.5;
-                        ClaimFailed?.Invoke();
-                    }
-                }
-            }
-            // ----- Deposit backpack into town storage (NEW) -----
+            // ----- Deposit backpack into town storage -----
             if (input.DepositPressed)
             {
                 if (!IsInTownZone)
@@ -353,55 +469,14 @@ namespace MineIt.Simulation
                 }
                 else
                 {
-                    int movedStacks = 0;
-
-                    // Copy keys to avoid modifying during enumeration
-                    var keys = new List<string>(Backpack.OreUnits.Keys);
-                    foreach (var oreId in keys)
-                    {
-                        int units = Backpack.GetUnits(oreId);
-                        if (units <= 0) continue;
-
-                        TownStorage.AddOreUnits(oreId, units);
-                        movedStacks++;
-
-                        // Remove from backpack by clearing and re-adding others is heavy,
-                        // so for MVP just clear and re-add via a new method below.
-                    }
-
-                    // MVP: simplest deterministic approach: clear backpack after transfer
-                    // (This assumes ALL backpack contents are ore only.)
-                    Backpack.Clear();
+                    int movedStacks = Backpack.TransferAllTo(TownStorage);
 
                     LastActionText = movedStacks > 0 ? "DEPOSIT OK" : "DEPOSIT (nothing)";
                     LastActionFlashSeconds = 1.5;
                 }
             }
 
-
-            // ----- Extract input (NEW: toggles continuous extraction) -----
-            if (input.ExtractPressed)
-            {
-                if (ExtractInProgress)
-                {
-                    StopExtraction("EXTRACT STOP");
-                }
-                else
-                {
-                    if (CanExtractNow && ExtractCandidateDepositId != 0)
-                    {
-                        StartExtraction(ExtractCandidateDepositId);
-                        LastActionText = "EXTRACT START";
-                        LastActionFlashSeconds = 1.5;
-                    }
-                    else
-                    {
-                        LastActionText = "EXTRACT FAILED (not eligible)";
-                        LastActionFlashSeconds = 1.5;
-                    }
-                }
-            }
-            // ----- Sell town storage ore for credits (NEW) -----
+            // ----- Sell town storage ore for credits -----
             if (input.SellPressed)
             {
                 if (!IsInTownZone)
@@ -411,24 +486,13 @@ namespace MineIt.Simulation
                 }
                 else
                 {
-                    int totalCredits = 0;
-                    int stacks = 0;
-
-                    var keys = new List<string>(TownStorage.OreUnits.Keys);
-                    foreach (var oreId in keys)
-                    {
-                        int units = TownStorage.GetUnits(oreId);
-                        if (units <= 0) continue;
-
-                        int price = OreCatalog.BasePricePerUnit(oreId);
-                        totalCredits += units * price;
-                        stacks++;
-                    }
+                    var result = TownStorage.ComputeSaleValueAndClear();
+                    int totalCredits = result.creditsGained;
+                    int stacks = result.stacksSold;
 
                     if (totalCredits > 0)
                     {
                         Credits += totalCredits;
-                        TownStorage.Clear();   // see next step
                         LastActionText = $"SOLD {stacks} STACKS  +{totalCredits} cr";
                     }
                     else
@@ -439,84 +503,206 @@ namespace MineIt.Simulation
                     LastActionFlashSeconds = 1.5;
                 }
             }
+        }
 
+        private void StepFog(int playerTx, int playerTy)
+        {
+            Fog.ClearVisibleNow();
+            int vision = Clock.IsNight ? 6 : 9; // MVP: no equipped light yet
+            Fog.RevealCircle(playerTx, playerTy, vision);
+        }
 
-            // ----- Claim channel tick (NEW) -----
+        private void StepCandidates(int playerTx, int playerTy)
+        {
+            ComputeClaimCandidate(playerTx, playerTy);
+            ComputeExtractCandidate(playerTx, playerTy);
+        }
+
+        private void StepScan(InputSnapshot input, int playerTx, int playerTy)
+        {
+            if (!input.ScanPressed)
+                return;
+
+            bool scanExecuted = false;
+
+            if (ScanCooldownRemainingSeconds <= 0.0)
+            {
+                LastScanCenterTx = playerTx;
+                LastScanCenterTy = playerTy;
+                LastScanRadiusTiles = Player.DetectorRadiusTiles;
+                LastScanFlashSeconds = 0.35;
+
+                LastScanResults = Deposits.Scan(
+                    Chunks,
+                    scanCenterTx: playerTx,
+                    scanCenterTy: playerTy,
+                    radiusTiles: Player.DetectorRadiusTiles,
+                    maxDepthMeters: Player.DetectorMaxDepthMeters,
+                    sizeNoiseTiers: Player.DetectorSizeNoiseTiers,
+                    rng: _scanRng);
+
+                // Sort scan results by priority (highest first)
+                LastScanResults.Sort((a, b) =>
+                {
+                    double pa = a.ComputePriorityScore();
+                    double pb = b.ComputePriorityScore();
+                    return pb.CompareTo(pa);
+                });
+
+                foreach (var sr in LastScanResults)
+                    MarkDepositDiscoveredById(sr.DepositId);
+
+                ScanCooldownRemainingSeconds = Player.DetectorCooldownSeconds;
+                scanExecuted = true;
+
+                LastActionText = $"SCAN OK  hits={LastScanResults.Count}";
+                LastActionFlashSeconds = 1.5;
+            }
+            else
+            {
+                LastActionText = $"SCAN BLOCKED  cd={ScanCooldownRemainingSeconds:0.0}s";
+                LastActionFlashSeconds = 1.5;
+            }
+
+            if (scanExecuted) ScanExecuted?.Invoke();
+            else ScanDud?.Invoke();
+        }
+
+        private void StepClaimInput(InputSnapshot input, int playerTx, int playerTy)
+        {
+            if (!input.ClaimPressed)
+                return;
+
             if (ClaimInProgress)
             {
-                // Interrupt conditions (per your doc: movement interrupts; also leaving range interrupts)
-                bool movedThisFrame = (Math.Abs(vx) > 1e-9) || (Math.Abs(vy) > 1e-9);
-                if (movedThisFrame)
-                {
-                    CancelClaim("CLAIM INTERRUPTED (moved)");
-                    ClaimFailed?.Invoke();
-                }
-                else if (!IsStillInClaimRange(playerTx, playerTy, _claimTargetDepositId))
-                {
-                    CancelClaim("CLAIM INTERRUPTED (out of range)");
-                    ClaimFailed?.Invoke();
-                }
-                else
-                {
-                    ClaimChannelRemainingSeconds -= dtSeconds;
-                    if (ClaimChannelRemainingSeconds <= 0)
-                    {
-                        ClaimChannelRemainingSeconds = 0;
-
-                        bool ok = CompleteClaim(_claimTargetDepositId);
-                        _claimTargetDepositId = 0;
-
-                        if (ok)
-                        {
-                            LastActionText = "CLAIM OK";
-                            LastActionFlashSeconds = 1.5;
-                            ClaimSucceeded?.Invoke();
-                        }
-                        else
-                        {
-                            LastActionText = "CLAIM FAILED (lost eligibility)";
-                            LastActionFlashSeconds = 1.5;
-                            ClaimFailed?.Invoke();
-                        }
-                    }
-                }
+                CancelClaim("CLAIM CANCELED");
+                ClaimFailed?.Invoke();
+                return;
             }
 
-            // ----- Extraction tick (NEW: continuous while active) -----
+            if (CanClaimNow && ClaimCandidateDepositId != 0)
+            {
+                StartClaim(playerTx, playerTy, ClaimCandidateDepositId);
+                LastActionText = "CLAIM START";
+                LastActionFlashSeconds = 1.5;
+            }
+            else
+            {
+                LastActionText = "CLAIM FAILED (not in range)";
+                LastActionFlashSeconds = 1.5;
+                ClaimFailed?.Invoke();
+            }
+        }
+
+        private void StepExtractInput(InputSnapshot input)
+        {
+            if (!input.ExtractPressed)
+                return;
+
             if (ExtractInProgress)
             {
-                // Interrupt on movement or leaving range, or deposit invalid, or backpack full.
-                bool movedThisFrame = (System.Math.Abs(vx) > 1e-9) || (System.Math.Abs(vy) > 1e-9);
-                if (movedThisFrame)
+                StopExtraction("EXTRACT STOP");
+                return;
+            }
+
+            if (CanExtractNow && ExtractCandidateDepositId != 0)
+            {
+                StartExtraction(ExtractCandidateDepositId);
+                LastActionText = "EXTRACT START";
+                LastActionFlashSeconds = 1.5;
+            }
+            else
+            {
+                LastActionText = "EXTRACT FAILED (not eligible)";
+                LastActionFlashSeconds = 1.5;
+            }
+        }
+
+        private void StepClaimTick(double dtSeconds, int playerTx, int playerTy, bool movedThisFrame)
+        {
+            if (!ClaimInProgress)
+                return;
+
+            if (movedThisFrame)
+            {
+                CancelClaim("CLAIM INTERRUPTED (moved)");
+                ClaimFailed?.Invoke();
+                return;
+            }
+
+            if (!IsStillInClaimRange(playerTx, playerTy, _claimTargetDepositId))
+            {
+                CancelClaim("CLAIM INTERRUPTED (out of range)");
+                ClaimFailed?.Invoke();
+                return;
+            }
+
+            ClaimChannelRemainingSeconds -= dtSeconds;
+            if (ClaimChannelRemainingSeconds <= 0)
+            {
+                ClaimChannelRemainingSeconds = 0;
+
+                bool ok = CompleteClaim(_claimTargetDepositId);
+                _claimTargetDepositId = 0;
+
+                if (ok)
                 {
-                    StopExtraction("EXTRACT INTERRUPTED (moved)");
+                    LastActionText = "CLAIM OK";
+                    LastActionFlashSeconds = 1.5;
+                    ClaimSucceeded?.Invoke();
                 }
                 else
                 {
-                    var d = Deposits.TryGetDepositById(_extractTargetDepositId);
-                    if (d == null)
-                    {
-                        StopExtraction("EXTRACT INTERRUPTED (missing)");
-                    }
-                    else if (!IsStillEligibleForExtraction(playerTx, playerTy, d))
-                    {
-                        StopExtraction("EXTRACT INTERRUPTED (eligibility)");
-                    }
-                    else if (Backpack.IsFull)
-                    {
-                        StopExtraction("EXTRACT STOP (backpack full)");
-                    }
-                    else
-                    {
-                        TickExtraction(dtSeconds, d);
-                    }
+                    LastActionText = "CLAIM FAILED (lost eligibility)";
+                    LastActionFlashSeconds = 1.5;
+                    ClaimFailed?.Invoke();
                 }
             }
+        }
 
+        private void StepExtractTick(double dtSeconds, int playerTx, int playerTy, bool movedThisFrame)
+        {
+            if (!ExtractInProgress)
+                return;
 
+            if (movedThisFrame)
+            {
+                StopExtraction("EXTRACT INTERRUPTED (moved)");
+                return;
+            }
 
+            var d = Deposits.TryGetDepositById(_extractTargetDepositId);
+            if (d == null)
+            {
+                StopExtraction("EXTRACT INTERRUPTED (missing)");
+                return;
+            }
 
-            // ----- Timers -----
+            if (!IsStillEligibleForExtraction(playerTx, playerTy, d))
+            {
+                StopExtraction("EXTRACT INTERRUPTED (eligibility)");
+                return;
+            }
+
+            if (Backpack.IsFull)
+            {
+                StopExtraction("EXTRACT STOP (backpack full)");
+                return;
+            }
+
+            TickExtraction(dtSeconds, d);
+        }
+
+        private void StepNpcMiners(double dtSeconds)
+        {
+            if (Npcs == null) return;
+            if (Deposits == null) return;
+
+            Npcs.Tick(dtSeconds, Deposits);
+        }
+
+        private void StepTimers(double dtSeconds)
+        {
             if (LastScanFlashSeconds > 0)
             {
                 LastScanFlashSeconds -= dtSeconds;
@@ -535,6 +721,7 @@ namespace MineIt.Simulation
                 if (LastActionFlashSeconds < 0) LastActionFlashSeconds = 0;
             }
         }
+
 
         private void PopulateDepositsForActiveChunks()
         {
@@ -577,7 +764,7 @@ namespace MineIt.Simulation
             ClaimCandidateDepositId = 0;
 
             int bestDist2 = int.MaxValue;
-            Deposit? best = null;
+            Deposit best = null;
 
             foreach (var ch in Chunks.GetLoadedChunks())
                 foreach (var d in ch.Deposits)
@@ -663,7 +850,7 @@ namespace MineIt.Simulation
             ExtractCandidateDepositId = 0;
 
             int bestDist2 = int.MaxValue;
-            Deposit? best = null;
+            Deposit best = null;
 
             foreach (var ch in Chunks.GetLoadedChunks())
                 foreach (var d in ch.Deposits)
@@ -919,6 +1106,32 @@ namespace MineIt.Simulation
                 d.ClaimedByPlayer = sd.ClaimedByPlayer;
                 d.ClaimedByNpcId = (sd.ClaimedByNpcId >= 0) ? sd.ClaimedByNpcId : (int?)null;
                 d.DiscoveredByPlayer = sd.DiscoveredByPlayer;
+            }
+
+            // NPC miners
+            if (data.NpcMiners != null && data.NpcMiners.Count > 0)
+            {
+                Npcs.LoadFromSave(data.NpcMiners);
+
+                // Re-assert deposit ownership consistency for NPC targets (best-effort):
+                // If an NPC has a target deposit, ensure the deposit's ClaimedByNpcId is set.
+                for (int i = 0; i < Npcs.Npcs.Count; i++)
+                {
+                    var npc = Npcs.Npcs[i];
+                    if (npc.TargetDepositId == 0) continue;
+
+                    var d = Deposits.TryGetDepositById(npc.TargetDepositId);
+                    if (d != null && !d.ClaimedByPlayer)
+                    {
+                        if (!d.ClaimedByNpcId.HasValue)
+                            d.ClaimedByNpcId = npc.NpcId;
+                    }
+                }
+            }
+            else
+            {
+                // No NPC data in old saves -> initialize default NPCs
+                Npcs.InitializeMvpNpcSet(NpcMinerCount);
             }
 
             LastActionText = "LOAD OK";
