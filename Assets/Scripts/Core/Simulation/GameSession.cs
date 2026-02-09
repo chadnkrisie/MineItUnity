@@ -27,10 +27,22 @@ namespace MineIt.Simulation
         // MVP tuning: start small; you can raise later
         public int NpcMinerCount { get; set; } = 12;
 
+        // ===== Vault Authentication (Win gating) =====
+        public bool HasWon { get; private set; }
+
+        public bool VaultAuthInProgress { get; private set; }
+        public double VaultAuthRemainingSeconds { get; private set; }
+
+        // Tuning: how long the Vault takes to authenticate once all 6 are deposited
+        public const double VaultAuthTotalSeconds = 10.0;
+        // ============================================
+
+
         // ===== Inventory (NEW - MVP) =====
         public Backpack Backpack { get; private set; } = null!;
 
         public int BackpackTier { get; private set; } = 1; // NEW: track tier explicitly
+
 
         public int Credits { get; private set; }   // NEW
         /// <summary>
@@ -212,6 +224,7 @@ namespace MineIt.Simulation
         public event Action ScanDud;        // fires when scan pressed but blocked (cooldown)
         public event Action ClaimSucceeded; // fires ONLY when claim completes successfully
         public event Action ClaimFailed;    // fires when claim cannot be started / is canceled / etc.
+        public event Action VictoryAchieved;
 
         // ===== Scan debug / HUD fields =====
         public List<ScanResult> LastScanResults { get; private set; } = new List<ScanResult>();
@@ -365,6 +378,37 @@ namespace MineIt.Simulation
             // 4) Town actions (upgrade / deposit / sell). Uses IsInTownZone.
             StepTownActions(input);
 
+            // ===== Vault Authentication gating =====
+            if (!HasWon)
+            {
+                if (!VaultAuthInProgress)
+                {
+                    // Start authentication once, when all artifacts are present in the Vault
+                    if (HasAllArtifactsInVault())
+                    {
+                        VaultAuthInProgress = true;
+                        VaultAuthRemainingSeconds = VaultAuthTotalSeconds;
+                        PostStatus("VAULT AUTH STARTED", 2.0);
+                    }
+                }
+                else
+                {
+                    // Tick authentication
+                    VaultAuthRemainingSeconds -= dtSeconds;
+                    if (VaultAuthRemainingSeconds <= 0)
+                    {
+                        VaultAuthRemainingSeconds = 0;
+                        VaultAuthInProgress = false;
+
+                        HasWon = true;
+                        PostStatus("DIRECTIVE COMPLETE", 3.0);
+                        VictoryAchieved?.Invoke();
+                    }
+                }
+            }
+            // ============================================
+
+
             // 5) Fog (depends on position + clock)
             StepFog(mv.PlayerTx, mv.PlayerTy);
 
@@ -386,9 +430,6 @@ namespace MineIt.Simulation
             // 9) Timers
             StepTimers(dtSeconds);
 
-
-            // 9) Timers
-            StepTimers(dtSeconds);
         }
 
         private void StepChunkStreamingAndDeposits()
@@ -742,7 +783,7 @@ namespace MineIt.Simulation
                     // Populate at most once per chunk (requires Chunk.DepositsPopulated in Chunk.cs)
                     if (!ch.DepositsPopulated)
                     {
-                        Deposits.PopulateChunkDeposits(ch);
+                        Deposits.PopulateChunkDeposits(ch, TownCenterTx, TownCenterTy);
                         ch.DepositsPopulated = true;
                     }
                 }
@@ -921,6 +962,26 @@ namespace MineIt.Simulation
 
         private void TickExtraction(double dtSeconds, Deposit d)
         {
+            // ===== Artifact extraction (quest items) =====
+            if (d.IsArtifact)
+            {
+                // MVP: allow extraction if in range and player-claimed (already enforced by caller)
+                // Add to backpack as a unique artifact ID, not as ore.
+
+                string aid = d.ArtifactId ?? "";
+                bool added = Backpack.AddArtifact(aid);
+
+                // Deplete deposit immediately (artifact is one-time)
+                d.RemainingUnits = 0;
+
+                StopExtraction(added
+                    ? $"ARTIFACT SECURED: {aid}"
+                    : $"ARTIFACT ALREADY HAVE: {aid}");
+
+                return;
+            }
+            // ===========================================
+
             // MVP: no MiningSkill yet. When you add skills, apply bonus here.
             double baseRateKgPerSec = Player.ExtractorRateKgPerSec;
 
@@ -1049,12 +1110,38 @@ namespace MineIt.Simulation
             }
         }
 
-        public void LoadFromSave(MineIt.Save.SaveGameData data)
+        private static readonly string[] RequiredArtifacts =
+{
+    "stellar_shard",
+    "ancient_lattice",
+    "void_compass",
+    "quantum_fossil",
+    "machine_relic",
+    "echo_prism"
+};
+
+        private bool HasAllArtifactsInVault()
+        {
+            if (TownStorage == null) return false;
+
+            for (int i = 0; i < RequiredArtifacts.Length; i++)
+            {
+                if (!TownStorage.HasArtifact(RequiredArtifacts[i]))
+                    return false;
+            }
+            return true;
+        }
+
+        public void LoadFromSave(Save.SaveGameData data)
         {
             if (data == null) return;
 
             // Re-init deterministic session from seed
             InitializeNewGame(data.Seed);
+
+            HasWon = data.HasWon;
+            VaultAuthInProgress = data.VaultAuthInProgress;
+            VaultAuthRemainingSeconds = data.VaultAuthRemainingSeconds;
 
             // Clock
             // We only have Advance() currently; set via repeated advance is dumb.
@@ -1083,6 +1170,9 @@ namespace MineIt.Simulation
             Backpack.LoadOreUnits(data.BackpackOre);
             TownStorage.LoadOreUnits(data.TownOre);
 
+            Backpack.LoadArtifacts(data.BackpackArtifacts);
+            TownStorage.LoadArtifacts(data.TownArtifacts);
+
             // Fog
             if (!string.IsNullOrEmpty(data.FogDiscoveredBitsBase64))
             {
@@ -1103,6 +1193,11 @@ namespace MineIt.Simulation
                 if (d == null) continue;
 
                 d.RemainingUnits = sd.RemainingUnits;
+
+                // Artifacts
+                d.IsArtifact = sd.IsArtifact;
+                d.ArtifactId = sd.ArtifactId ?? "";
+
                 d.ClaimedByPlayer = sd.ClaimedByPlayer;
                 d.ClaimedByNpcId = (sd.ClaimedByNpcId >= 0) ? sd.ClaimedByNpcId : (int?)null;
                 d.DiscoveredByPlayer = sd.DiscoveredByPlayer;

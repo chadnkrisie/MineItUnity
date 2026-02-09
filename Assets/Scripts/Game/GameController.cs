@@ -18,6 +18,7 @@ namespace MineItUnity.Game
 
         [Header("Optional References")]
         public WaypointManager Waypoints;
+        public WorldMapController Map;
 
         private void Awake()
         {
@@ -31,6 +32,9 @@ namespace MineItUnity.Game
 
             if (Waypoints == null)
                 Waypoints = FindObjectOfType<WaypointManager>();
+
+            if (Map == null)
+                Map = FindObjectOfType<WorldMapController>();
 
             // Simple player marker (placeholder sprite)
             var go = new GameObject("PlayerMarker");
@@ -64,6 +68,32 @@ namespace MineItUnity.Game
 
             if (UnityEngine.Input.GetKeyDown(KeyCode.F9))
                 LoadGame();
+
+            // ---- Debug: toggle artifact overlay on map (F1) ----
+            if (UnityEngine.Input.GetKeyDown(KeyCode.F1))
+            {
+                try
+                {
+                    string report = _session.Deposits.GetArtifactSpawnsDebugReport();
+                    Debug.Log(report);
+
+                    if (Map != null)
+                    {
+                        bool newState = !Map.DebugShowArtifacts;
+                        Map.DebugSetArtifactsOverlay(newState, openMap: true);
+                        _session.PostStatus(newState ? "DEBUG: Artifacts ON (map)" : "DEBUG: Artifacts OFF", 2.0);
+                    }
+                    else
+                    {
+                        _session.PostStatus("DEBUG: Map not found (cannot show artifacts)", 2.5);
+                    }
+                }
+                catch (System.Exception ex)
+                {
+                    _session.PostStatus($"ARTIFACT DEBUG FAILED: {ex.Message}", 2.5);
+                }
+            }
+
 
             bool oneShotConsumed = false;
             while (_accumulator >= FixedDt)

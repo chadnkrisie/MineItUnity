@@ -9,14 +9,46 @@ namespace MineIt.Mining
         private readonly int _seed;
 
         // Simple: keep discovered deposits in a dictionary by id for now
-        private readonly Dictionary<int, Deposit> _allDeposits = new();
+        private readonly Dictionary<int, Deposit> _allDeposits = new Dictionary<int, Deposit>();
 
-        public DepositManager(int seed) => _seed = seed;
+        // ===== Artifacts (guaranteed deterministic spawns) =====
+        private sealed class ArtifactSpawn
+        {
+            public string ArtifactId = "";
+            public int DepositId;
+            public int Tx;
+            public int Ty;
+            public int DepthMeters;
+        }
+
+        private readonly List<ArtifactSpawn> _artifactSpawns = new List<ArtifactSpawn>(6);
+
+        // Canonical artifact IDs (stable)
+        private static readonly string[] ArtifactIds =
+        {
+            "stellar_shard",
+            "ancient_lattice",
+            "void_compass",
+            "quantum_fossil",
+            "machine_relic",
+            "echo_prism"
+        };
+        // ======================================================
+
+        public DepositManager(int seed)
+        {
+            _seed = seed;
+            BuildArtifactSpawnsDeterministic();
+        }
 
         public IEnumerable<Deposit> GetAllDeposits() => _allDeposits.Values;
 
-        // Called when a chunk is first created/loaded.
-        public void PopulateChunkDeposits(Chunk chunk)
+        /// <summary>
+        /// Called when a chunk is first created/loaded.
+        /// NOTE: townCenter is passed in to keep the signature aligned with your core architecture,
+        /// even though the current town is always the center in your implementation.
+        /// </summary>
+        public void PopulateChunkDeposits(Chunk chunk, int townCenterTx, int townCenterTy)
         {
             // Deterministic per chunk
             int cx = chunk.Coord.Cx;
@@ -24,6 +56,9 @@ namespace MineIt.Mining
 
             int chunkSeed = ChunkSeed(cx, cy);
             var rng = new Random(chunkSeed);
+
+            // Always materialize any precomputed artifacts that fall inside this chunk
+            MaterializeArtifactsForChunk(chunk);
 
             // deposits per chunk (tuning constant)
             // TESTING: increase density so scans find something more often
@@ -56,7 +91,11 @@ namespace MineIt.Mining
                     DepthMeters = depth,
                     SizeTier = tier,
                     RemainingUnits = units,
-                    DiscoveredByPlayer = false
+                    DiscoveredByPlayer = false,
+
+                    // artifacts (regular deposits are not artifacts)
+                    IsArtifact = false,
+                    ArtifactId = ""
                 };
 
                 AddOrReplaceDepositToChunk(chunk, d);
@@ -106,7 +145,7 @@ namespace MineIt.Mining
                         int dy = d.CenterTy - scanCenterTy;
                         if (dx * dx + dy * dy > r2) continue;
 
-                        // Signal strength (per your architecture)
+                        // Signal strength
                         double distTiles = System.Math.Sqrt(dx * dx + dy * dy);
                         double hd = distTiles / System.Math.Max(radiusTiles, 1);
                         double vd = (double)d.DepthMeters / System.Math.Max(maxDepthMeters, 1);
@@ -174,7 +213,7 @@ namespace MineIt.Mining
 
         private static int BaseUnitsForTier(int tier)
         {
-            // Matches your tier table roughly (MVP: exact mapping not required yet)
+            // MVP mapping (your earlier table)
             return tier switch
             {
                 1 => 20,
@@ -218,6 +257,9 @@ namespace MineIt.Mining
             // MVP defaults (later: from ores.json)
             return oreId switch
             {
+                // Artifacts: strong signature so they rank highly and are easy to notice once in range
+                "artifact" => 2.2,
+
                 "scrap" => 0.8,
                 "iron" => 1.0,
                 "copper" => 1.0,
@@ -282,5 +324,203 @@ namespace MineIt.Mining
             // Not found → add
             list.Add(d);
         }
+
+        // ===== Artifacts (guaranteed deterministic spawns) =====
+
+        private void BuildArtifactSpawnsDeterministic()
+        {
+            _artifactSpawns.Clear();
+
+            var rng = new Random(_seed ^ 0x6B9D2E17);
+
+            const int townTx = MineIt.Simulation.GameSession.WORLD_W_TILES / 2;
+            const int townTy = MineIt.Simulation.GameSession.WORLD_H_TILES / 2;
+
+            for (int i = 0; i < ArtifactIds.Length; i++)
+            {
+                string artifactId = ArtifactIds[i];
+
+                int tx, ty;
+
+                // Guaranteed Band-4 selection
+                for (; ; )
+                {
+                    tx = rng.Next(0, MineIt.Simulation.GameSession.WORLD_W_TILES);
+                    ty = rng.Next(0, MineIt.Simulation.GameSession.WORLD_H_TILES);
+
+                    if (ComputeRegionBand(tx, ty, townTx, townTy) == 4)
+                        break;
+                }
+
+                int depth = rng.Next(450, 651);
+
+                _artifactSpawns.Add(new ArtifactSpawn
+                {
+                    ArtifactId = artifactId,
+                    DepositId = MakeArtifactDepositId(i, tx, ty),
+                    Tx = tx,
+                    Ty = ty,
+                    DepthMeters = depth
+                });
+            }
+        }
+
+        private void MaterializeArtifactsForChunk(Chunk chunk)
+        {
+            if (_artifactSpawns.Count == 0) return;
+
+            int cx = chunk.Coord.Cx;
+            int cy = chunk.Coord.Cy;
+
+            int baseTx = cx * Chunk.CHUNK_SIZE_TILES;
+            int baseTy = cy * Chunk.CHUNK_SIZE_TILES;
+            int endTx = baseTx + Chunk.CHUNK_SIZE_TILES - 1;
+            int endTy = baseTy + Chunk.CHUNK_SIZE_TILES - 1;
+
+            for (int i = 0; i < _artifactSpawns.Count; i++)
+            {
+                var a = _artifactSpawns[i];
+
+                if (a.Tx < baseTx || a.Tx > endTx || a.Ty < baseTy || a.Ty > endTy)
+                    continue;
+
+                // Already created?
+                if (_allDeposits.ContainsKey(a.DepositId))
+                    continue;
+
+                var d = new Deposit
+                {
+                    DepositId = a.DepositId,
+                    OreTypeId = "artifact",
+                    CenterTx = a.Tx,
+                    CenterTy = a.Ty,
+                    DepthMeters = a.DepthMeters,
+                    SizeTier = 15,
+                    RemainingUnits = 1,
+
+                    DiscoveredByPlayer = false,
+
+                    IsArtifact = true,
+                    ArtifactId = a.ArtifactId
+                };
+
+                AddOrReplaceDepositToChunk(chunk, d);
+            }
+        }
+
+        private static int MakeArtifactDepositId(int index0to5, int tx, int ty)
+        {
+            // High-bit namespace to avoid collisions with MakeDepositId()
+            unchecked
+            {
+                int idx = index0to5 & 0x7;  // 3 bits
+                int x = tx & 0x1FF;         // 9 bits (0..511)
+                int y = ty & 0x1FF;         // 9 bits (0..511)
+
+                return (0x7 << 28) | (idx << 18) | (x << 9) | y;
+            }
+        }
+
+        private static int ComputeRegionBand(int tx, int ty, int townTx, int townTy)
+        {
+            int dx = tx - townTx;
+            int dy = ty - townTy;
+
+            // Euclidean tile distance rounded to int
+            int d = (int)Math.Round(Math.Sqrt(dx * dx + dy * dy));
+
+            if (d <= 40) return 0;
+            if (d <= 120) return 1;
+            if (d <= 220) return 2;
+            if (d <= 320) return 3;
+            return 4;
+        }
+
+        // ===== Debug/Presentation accessors for artifact spawns =====
+        // Unity-side debug map overlay needs coordinates; keep it read-only.
+
+        public int GetArtifactSpawnCount()
+        {
+            return (_artifactSpawns != null) ? _artifactSpawns.Count : 0;
+        }
+
+        public bool TryGetArtifactSpawn(int index,
+            out string artifactId,
+            out int tx,
+            out int ty,
+            out int depthMeters,
+            out int depositId)
+        {
+            artifactId = "";
+            tx = ty = depthMeters = depositId = 0;
+
+            if (_artifactSpawns == null) return false;
+            if ((uint)index >= (uint)_artifactSpawns.Count) return false;
+
+            var a = _artifactSpawns[index];
+            if (a == null) return false;
+
+            artifactId = a.ArtifactId ?? "";
+            tx = a.Tx;
+            ty = a.Ty;
+            depthMeters = a.DepthMeters;
+            depositId = a.DepositId;
+            return true;
+        }
+        // ==========================================================
+
+
+        // ======================================================
+
+        public string GetArtifactSpawnsDebugReport()
+        {
+            int idsLen = (ArtifactIds != null) ? ArtifactIds.Length : -1;
+            int spawns = (_artifactSpawns != null) ? _artifactSpawns.Count : -1;
+
+            var sb = new System.Text.StringBuilder(1024);
+
+            sb.Append("Artifacts DEBUG: ArtifactIds.Length=")
+              .Append(idsLen)
+              .Append("  _artifactSpawns.Count=")
+              .Append(spawns)
+              .AppendLine();
+
+            if (_artifactSpawns == null || _artifactSpawns.Count == 0)
+            {
+                sb.AppendLine("Artifacts: (none precomputed)");
+                return sb.ToString();
+            }
+
+            sb.AppendLine("Artifacts (precomputed, deterministic):");
+
+            int townTx = MineIt.Simulation.GameSession.WORLD_W_TILES / 2;
+            int townTy = MineIt.Simulation.GameSession.WORLD_H_TILES / 2;
+
+            for (int i = 0; i < _artifactSpawns.Count; i++)
+            {
+                var a = _artifactSpawns[i];
+                if (a == null) continue;
+
+                int dx = a.Tx - townTx;
+                int dy = a.Ty - townTy;
+                double dist = Math.Sqrt(dx * dx + dy * dy);
+
+                int cx = a.Tx / MineIt.World.Chunk.CHUNK_SIZE_TILES;
+                int cy = a.Ty / MineIt.World.Chunk.CHUNK_SIZE_TILES;
+
+                sb.Append(" ")
+                  .Append(i + 1).Append(") ")
+                  .Append(a.ArtifactId)
+                  .Append("  id=").Append(a.DepositId)
+                  .Append("  tile=(").Append(a.Tx).Append(",").Append(a.Ty).Append(')')
+                  .Append("  chunk=(").Append(cx).Append(",").Append(cy).Append(')')
+                  .Append("  depth=").Append(a.DepthMeters).Append("m")
+                  .Append("  dist=").Append(dist.ToString("0.0"))
+                  .AppendLine();
+            }
+
+            return sb.ToString();
+        }
+
     }
 }

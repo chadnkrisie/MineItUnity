@@ -120,6 +120,7 @@ namespace MineIt.Mining
             {
                 if (d == null) continue;
                 if (d.RemainingUnits <= 0) continue;
+                if (d.IsArtifact) continue; // locked fairness rule: NPCs never claim artifact deposits
 
                 if (d.ClaimedByPlayer) continue;
                 if (d.ClaimedByNpcId.HasValue) continue;
@@ -163,6 +164,14 @@ namespace MineIt.Mining
         {
             var d = deposits.TryGetDepositById(npc.TargetDepositId);
             if (d == null)
+            {
+                npc.TargetDepositId = 0;
+                npc.ExtractKgCarry = 0.0;
+                return;
+            }
+
+            // Safety: NPCs should never extract artifacts
+            if (d.IsArtifact)
             {
                 npc.TargetDepositId = 0;
                 npc.ExtractKgCarry = 0.0;

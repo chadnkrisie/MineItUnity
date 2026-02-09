@@ -48,6 +48,19 @@ namespace MineItUnity.Game.Map
         public Color32 DepositPlayer = new Color32(50, 255, 50, 255);       // green
         public Color32 DepositNpc = new Color32(255, 90, 30, 255);          // orange/red
 
+        [Header("DEBUG: Artifacts")]
+        public bool DebugShowArtifacts = false;
+
+        [Tooltip("If true, left-clicking an artifact marker while map is open teleports player there (DEBUG ONLY).")]
+        public bool DebugClickTeleportsToArtifact = true;
+
+        [Tooltip("How close (in tiles) a click must be to an artifact point to count.")]
+        public int DebugArtifactClickRadiusTiles = 8;
+
+        public Color32 ArtifactDebugColor = new Color32(255, 0, 255, 255); // magenta
+        public int ArtifactDotRadius = 3;
+
+
         [Header("Waypoint")]
         public bool AllowWaypoint = true;
         public Color32 WaypointColor = new Color32(80, 170, 255, 255); // blue
@@ -136,6 +149,31 @@ namespace MineItUnity.Game.Map
                 }
             }
 
+            // --- DEBUG: click artifact marker to teleport ---
+            if (DebugShowArtifacts && DebugClickTeleportsToArtifact && UnityEngine.Input.GetMouseButtonDown(0))
+            {
+                if (Controller != null && Controller.Session != null && TryGetMapTileUnderMouse(out int tx, out int ty))
+                {
+                    if (TryFindNearestArtifactUnderClick(Controller.Session, tx, ty, out int aTx, out int aTy))
+                    {
+                        // Teleport player to artifact tile center
+                        var s = Controller.Session;
+                        s.Player.PositionX = aTx;
+                        s.Player.PositionY = aTy;
+
+                        // Stream chunks around destination for immediate visuals
+                        s.Chunks.EnsureActiveRadius(s.Player.PositionX, s.Player.PositionY, s.ActiveChunkRadius);
+
+                        s.PostStatus($"DEBUG TELEPORT: artifact ({aTx},{aTy})", 2.0);
+
+                        // Keep map open so you can click multiple quickly (or set to false if you prefer)
+                        // SetVisible(false);
+
+                        return; // consume click; do NOT set waypoint this frame
+                    }
+                }
+            }
+
             // --- Waypoint click handling ---
             if (AllowWaypoint && Waypoints != null)
             {
@@ -167,6 +205,17 @@ namespace MineItUnity.Game.Map
 
             EnsureTexture(Controller.Session);
             RenderMap(Controller.Session);
+        }
+
+        public void DebugSetArtifactsOverlay(bool enabled, bool openMap = true)
+        {
+            DebugShowArtifacts = enabled;
+
+            if (openMap)
+                SetVisible(true); // OK because we're inside the same class
+
+            // Force immediate refresh when toggled.
+            _nextUpdateTime = 0f;
         }
 
         private void SetVisible(bool v)
@@ -309,7 +358,20 @@ namespace MineItUnity.Game.Map
                 }
             }
 
-            // 2) Deposit markers (discovered only)
+            // 2) DEBUG artifact markers (show even if undiscovered)
+            if (DebugShowArtifacts && s.Deposits != null)
+            {
+                int n = s.Deposits.GetArtifactSpawnCount();
+                for (int i = 0; i < n; i++)
+                {
+                    if (!s.Deposits.TryGetArtifactSpawn(i, out _, out int ax, out int ay, out _, out _))
+                        continue;
+
+                    DrawDot(w, h, ax, ay, ArtifactDotRadius, ArtifactDebugColor);
+                }
+            }
+
+            // 3) Deposit markers (discovered only)
             foreach (var d in s.Deposits.GetAllDeposits())
             {
                 if (!d.DiscoveredByPlayer) continue;
@@ -355,7 +417,7 @@ namespace MineItUnity.Game.Map
                 DrawDot(w, h, d.CenterTx, d.CenterTy, DepositDotRadius, finalColor);
             }
 
-            // 3) Town marker (always visible on map; tweak rule later if desired)
+            // 4) Town marker (always visible on map; tweak rule later if desired)
             if (ShowTownMarker)
             {
                 int tTx = Mathf.Clamp(s.TownCenterTx, 0, w - 1);
@@ -364,12 +426,12 @@ namespace MineItUnity.Game.Map
                 DrawDot(w, h, tTx, tTy, TownDotRadius, TownColor);
             }
 
-            // 4) Player dot (always)
+            // 5) Player dot (always)
             int pTx = Mathf.Clamp(Mathf.FloorToInt((float)s.Player.PositionX), 0, w - 1);
             int pTy = Mathf.Clamp(Mathf.FloorToInt((float)s.Player.PositionY), 0, h - 1);
             DrawDot(w, h, pTx, pTy, PlayerDotRadius, PlayerColor);
 
-            // 5) Waypoint marker
+            // 6) Waypoint marker
             if (Waypoints != null && Waypoints.HasWaypoint)
             {
                 DrawDot(w, h, Waypoints.WaypointTx, Waypoints.WaypointTy, WaypointDotRadius, WaypointColor);
@@ -400,6 +462,39 @@ namespace MineItUnity.Game.Map
                     _pixels[row + x] = c;
                 }
             }
+        }
+
+        private bool TryFindNearestArtifactUnderClick(GameSession s, int clickTx, int clickTy, out int artifactTx, out int artifactTy)
+        {
+            artifactTx = artifactTy = 0;
+            if (s == null || s.Deposits == null) return false;
+
+            int r = Mathf.Max(0, DebugArtifactClickRadiusTiles);
+            int r2 = r * r;
+
+            int bestDist2 = int.MaxValue;
+            bool found = false;
+
+            int n = s.Deposits.GetArtifactSpawnCount();
+            for (int i = 0; i < n; i++)
+            {
+                if (!s.Deposits.TryGetArtifactSpawn(i, out _, out int ax, out int ay, out _, out _))
+                    continue;
+
+                int dx = ax - clickTx;
+                int dy = ay - clickTy;
+                int dist2 = dx * dx + dy * dy;
+
+                if (dist2 <= r2 && dist2 < bestDist2)
+                {
+                    bestDist2 = dist2;
+                    artifactTx = ax;
+                    artifactTy = ay;
+                    found = true;
+                }
+            }
+
+            return found;
         }
 
         private bool TryFindNearestDepositUnderClick(GameSession s, int clickTx, int clickTy, out int depositTx, out int depositTy)

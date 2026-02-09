@@ -98,6 +98,44 @@ namespace MineItUnity.Game.Town
             }
             if (shown == 0) _sb.Append("  (empty)\n");
 
+            // Artifacts in Vault (fixed order + completion counter)
+            string[] ordered = {"stellar_shard", "ancient_lattice", "void_compass", "quantum_fossil", "machine_relic", "echo_prism"};
+
+            int have = 0;
+            for (int i = 0; i < ordered.Length; i++)
+            {
+                if (s.TownStorage.HasArtifact(ordered[i])) have++;
+            }
+
+            _sb.Append("Artifacts (Vault): ")
+               .Append(have).Append('/').Append(ordered.Length)
+               .AppendLine();
+
+            for (int i = 0; i < ordered.Length; i++)
+            {
+                string id = ordered[i];
+                bool ok = s.TownStorage.HasArtifact(id);
+
+                _sb.Append("  ")
+                   .Append(ok ? "[X] " : "[ ] ")
+                   .Append(PrettyArtifactName(id))
+                   .AppendLine();
+            }
+
+            if (s.HasWon)
+            {
+                _sb.AppendLine();
+                _sb.AppendLine("Directive: COMPLETE");
+            }
+            else if (s.VaultAuthInProgress)
+            {
+                _sb.AppendLine();
+                _sb.Append("Vault Authentication: ")
+                   .Append(Mathf.CeilToInt((float)s.VaultAuthRemainingSeconds))
+                   .AppendLine("s");
+            }
+
+
             // Upgrades (next tier)
             int detNext = Mathf.Clamp(s.Player.DetectorTier + 1, 1, 5);
             int extNext = Mathf.Clamp(s.Player.ExtractorTier + 1, 1, 5);
@@ -126,6 +164,24 @@ namespace MineItUnity.Game.Town
             if (BuyDetectorButton != null) BuyDetectorButton.interactable = (s.Player.DetectorTier < 5 && s.Credits >= detCost);
             if (BuyExtractorButton != null) BuyExtractorButton.interactable = (s.Player.ExtractorTier < 5 && s.Credits >= extCost);
             if (BuyBackpackButton != null) BuyBackpackButton.interactable = (s.BackpackTier < 5 && s.Credits >= bagCost);
+        }
+
+        private static string PrettyArtifactName(string id)
+        {
+            if (string.IsNullOrWhiteSpace(id)) return "(unknown)";
+            // "stellar_shard" -> "Stellar Shard"
+            string s = id.Replace('_', ' ').Trim();
+            if (s.Length == 0) return "(unknown)";
+
+            var parts = s.Split(' ');
+            for (int i = 0; i < parts.Length; i++)
+            {
+                var p = parts[i];
+                if (p.Length == 0) continue;
+                parts[i] = char.ToUpperInvariant(p[0]) + (p.Length > 1 ? p.Substring(1) : "");
+            }
+
+            return string.Join(" ", parts);
         }
 
         private void WireButtons()

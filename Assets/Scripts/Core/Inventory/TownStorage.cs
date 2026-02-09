@@ -10,6 +10,23 @@ namespace MineIt.Inventory
     {
         private readonly Dictionary<string, int> _oreUnits = new Dictionary<string, int>(StringComparer.Ordinal);
 
+        // Artifacts are unique quest items; never sold.
+        private readonly HashSet<string> _artifacts = new HashSet<string>(StringComparer.Ordinal);
+
+        public System.Collections.Generic.IReadOnlyCollection<string> Artifacts => _artifacts;
+
+        public bool HasArtifact(string artifactId)
+        {
+            if (string.IsNullOrWhiteSpace(artifactId)) return false;
+            return _artifacts.Contains(artifactId);
+        }
+
+        public bool AddArtifact(string artifactId)
+        {
+            if (string.IsNullOrWhiteSpace(artifactId)) return false;
+            return _artifacts.Add(artifactId);
+        }
+
         public IReadOnlyDictionary<string, int> OreUnits => _oreUnits;
 
         public int GetUnits(string oreId)
@@ -24,7 +41,7 @@ namespace MineIt.Inventory
             else
                 _oreUnits[oreId] = units;
         }
-        public void Clear()
+        public void ClearOreOnly()
         {
             _oreUnits.Clear();
         }
@@ -52,13 +69,13 @@ namespace MineIt.Inventory
                 stacks++;
             }
 
-            Clear();
+            ClearOreOnly();
             return (totalCredits, stacks);
         }
 
-        public void LoadOreUnits(System.Collections.Generic.IEnumerable<MineIt.Save.StringIntPair> pairs)
+        public void LoadOreUnits(IEnumerable<MineIt.Save.StringIntPair> pairs)
         {
-            Clear();
+            ClearOreOnly();
             if (pairs == null) return;
 
             foreach (var p in pairs)
@@ -68,15 +85,27 @@ namespace MineIt.Inventory
             }
         }
 
-        public void LoadOreUnits(System.Collections.Generic.IDictionary<string, int> oreUnits)
+        public void LoadOreUnits(IDictionary<string, int> oreUnits)
         {
-            Clear();
+            ClearOreOnly();
             if (oreUnits == null) return;
 
             foreach (var kv in oreUnits)
             {
                 if (kv.Value <= 0) continue;
                 AddOreUnits(kv.Key, kv.Value);
+            }
+        }
+
+        public void LoadArtifacts(System.Collections.Generic.IEnumerable<string> artifactIds)
+        {
+            _artifacts.Clear();
+            if (artifactIds == null) return;
+
+            foreach (var id in artifactIds)
+            {
+                if (string.IsNullOrWhiteSpace(id)) continue;
+                _artifacts.Add(id);
             }
         }
 

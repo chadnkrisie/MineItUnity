@@ -13,9 +13,18 @@ namespace MineIt.Save
 
         public PlayerSaveData Player = new PlayerSaveData();
 
+        public bool HasWon;
+
+        public bool VaultAuthInProgress;
+        public double VaultAuthRemainingSeconds;
+
         // JsonUtility can't do Dictionary<,> -> store as pairs
         public List<StringIntPair> BackpackOre = new List<StringIntPair>();
         public List<StringIntPair> TownOre = new List<StringIntPair>();
+
+        // Artifacts are unique quest items (IDs). Stored separately from ore.
+        public List<string> BackpackArtifacts = new List<string>();
+        public List<string> TownArtifacts = new List<string>();
 
         public List<DepositSaveData> Deposits = new List<DepositSaveData>();
         public List<NpcMinerSaveData> NpcMiners = new List<NpcMinerSaveData>();
@@ -63,6 +72,10 @@ namespace MineIt.Save
     {
         public int DepositId;
         public int RemainingUnits;
+
+        // Artifacts
+        public bool IsArtifact;
+        public string ArtifactId;
 
         public bool ClaimedByPlayer;
 

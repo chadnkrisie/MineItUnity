@@ -52,6 +52,17 @@ namespace MineItUnity.Game
             _nextUpdateTime = 0f;
         }
 
+        private static readonly string[] RequiredArtifacts =
+{
+    "stellar_shard",
+    "ancient_lattice",
+    "void_compass",
+    "quantum_fossil",
+    "machine_relic",
+    "echo_prism"
+};
+
+
         private void Update()
         {
             if (Controller == null || Controller.Session == null || HudText == null)
@@ -172,6 +183,33 @@ namespace MineItUnity.Game
 
             _sb.Append("Credits: ").Append(s.Credits).AppendLine();
 
+            // --- Artifact progress (always visible) ---
+            int have = 0;
+            for (int i = 0; i < RequiredArtifacts.Length; i++)
+            {
+                if (s.TownStorage != null && s.TownStorage.HasArtifact(RequiredArtifacts[i]))
+                    have++;
+            }
+
+            _sb.Append("Artifacts: ")
+               .Append(have)
+               .Append('/')
+               .Append(RequiredArtifacts.Length);
+
+            if (s.HasWon)
+            {
+                _sb.Append("  COMPLETE");
+            }
+            else if (s.VaultAuthInProgress)
+            {
+                _sb.Append("  Authenticating ")
+                   .Append(Mathf.CeilToInt((float)s.VaultAuthRemainingSeconds))
+                   .Append("s");
+            }
+
+            _sb.AppendLine();
+
+
             // Cooldowns / channels (text-only MVP)
             if (s.ScanCooldownMaxSeconds > 0.0001)
             {
@@ -237,6 +275,9 @@ namespace MineItUnity.Game
             }
 
             // --- NPC mining feedback (for discovered deposits) ---
+            // Show at most one line, but do NOT return from BuildHudText (or we suppress prompts/Last:).
+            bool printedNpcLine = false;
+
             foreach (var ch in s.Chunks.GetLoadedChunks())
             {
                 foreach (var dep in ch.Deposits)
@@ -270,9 +311,12 @@ namespace MineItUnity.Game
                        .Append(FormatEta(eta))
                        .AppendLine();
 
-                    // Show only one NPC line to avoid spam
-                    return;
+                    printedNpcLine = true;
+                    break; // stop after one line
                 }
+
+                if (printedNpcLine)
+                    break;
             }
 
 

@@ -25,6 +25,11 @@ namespace MineIt.Save
             data.Player.BackpackTier = s.BackpackTier;
             data.Player.Credits = s.Credits;
 
+            data.HasWon = s.HasWon;
+            data.VaultAuthInProgress = s.VaultAuthInProgress;
+            data.VaultAuthRemainingSeconds = s.VaultAuthRemainingSeconds;
+
+
             // Inventory (pairs)
             data.BackpackOre.Clear();
             if (s.Backpack != null)
@@ -33,11 +38,25 @@ namespace MineIt.Save
                     data.BackpackOre.Add(new StringIntPair(kv.Key, kv.Value));
             }
 
+            data.BackpackArtifacts.Clear();
+            if (s.Backpack != null)
+            {
+                foreach (var aid in s.Backpack.Artifacts)
+                    data.BackpackArtifacts.Add(aid);
+            }
+
             data.TownOre.Clear();
             if (s.TownStorage != null)
             {
                 foreach (var kv in s.TownStorage.OreUnits)
                     data.TownOre.Add(new StringIntPair(kv.Key, kv.Value));
+            }
+
+            data.TownArtifacts.Clear();
+            if (s.TownStorage != null)
+            {
+                foreach (var aid in s.TownStorage.Artifacts)
+                    data.TownArtifacts.Add(aid);
             }
 
             // Deposits (mutable deltas)
@@ -48,6 +67,11 @@ namespace MineIt.Save
                 {
                     DepositId = d.DepositId,
                     RemainingUnits = d.RemainingUnits,
+
+                    // Artifacts
+                    IsArtifact = d.IsArtifact,
+                    ArtifactId = d.ArtifactId,
+
                     ClaimedByPlayer = d.ClaimedByPlayer,
                     ClaimedByNpcId = d.ClaimedByNpcId.HasValue ? d.ClaimedByNpcId.Value : -1,
                     DiscoveredByPlayer = d.DiscoveredByPlayer

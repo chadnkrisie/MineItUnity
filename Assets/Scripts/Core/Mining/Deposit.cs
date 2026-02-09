@@ -4,6 +4,15 @@
     {
         public int DepositId { get; internal set; }
         public string OreTypeId { get; internal set; } = "iron";
+
+        // ===== Artifacts (core foundation) =====
+        // If true, this deposit yields an artifact rather than normal ore.
+        public bool IsArtifact { get; internal set; }
+
+        // One of the 6 artifact IDs (e.g., "stellar_shard"). Empty if not artifact.
+        public string ArtifactId { get; internal set; } = "";
+        
+        // ======================================
         public int CenterTx { get; internal set; }
         public int CenterTy { get; internal set; }
 
