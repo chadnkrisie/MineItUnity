@@ -26,6 +26,7 @@ namespace MineItUnity.Game
         public Color UnclaimedColor = new Color(0.2f, 1.0f, 1.0f, 1.0f);    // cyan
         public Color PlayerClaimedColor = new Color(0.2f, 1.0f, 0.2f, 1.0f); // green
         public Color NpcClaimedColor = new Color(1.0f, 0.35f, 0.1f, 1.0f);   // orange/red
+        public Color DepletedColor = new Color(0.55f, 0.55f, 0.55f, 1.0f);   // gray
 
         private Camera _cam;
 
@@ -92,7 +93,9 @@ namespace MineItUnity.Game
                 foreach (var d in ch.Deposits)
                 {
                     if (!d.DiscoveredByPlayer) continue;
-                    if (d.RemainingUnits <= 0) continue;
+
+                    // For trust/history: show depleted as gray markers instead of hiding them.
+                    bool depleted = d.IsDepleted || (d.RemainingUnits <= 0);
 
                     int tx = d.CenterTx;
                     int ty = d.CenterTy;
@@ -108,8 +111,9 @@ namespace MineItUnity.Game
                     sr.transform.position = new Vector3(tx + 0.5f, ty + 0.5f, 0f);
                     sr.transform.localScale = new Vector3(MarkerScale, MarkerScale, 1f);
 
-                    // Ownership color
-                    if (d.ClaimedByPlayer) sr.color = PlayerClaimedColor;
+                    // Ownership / archival color
+                    if (depleted) sr.color = DepletedColor;
+                    else if (d.ClaimedByPlayer) sr.color = PlayerClaimedColor;
                     else if (d.ClaimedByNpcId.HasValue) sr.color = NpcClaimedColor;
                     else sr.color = UnclaimedColor;
                 }

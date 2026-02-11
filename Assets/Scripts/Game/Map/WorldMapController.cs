@@ -47,6 +47,7 @@ namespace MineItUnity.Game.Map
         public Color32 DepositUnclaimed = new Color32(50, 255, 255, 255);   // cyan
         public Color32 DepositPlayer = new Color32(50, 255, 50, 255);       // green
         public Color32 DepositNpc = new Color32(255, 90, 30, 255);          // orange/red
+        public Color32 DepositDepleted = new Color32(140, 140, 140, 255);   // gray
 
         [Header("DEBUG: Artifacts")]
         public bool DebugShowArtifacts = false;
@@ -375,17 +376,19 @@ namespace MineItUnity.Game.Map
             foreach (var d in s.Deposits.GetAllDeposits())
             {
                 if (!d.DiscoveredByPlayer) continue;
-                if (d.RemainingUnits <= 0) continue;
 
-                Color32 dc;
-                if (d.ClaimedByPlayer) dc = DepositPlayer;
-                else if (d.ClaimedByNpcId.HasValue) dc = DepositNpc;
-                else dc = DepositUnclaimed;
+                // NEW: depleted sites remain visible as archived markers
+                bool depleted = d.IsDepleted || (d.RemainingUnits <= 0);
 
-                Color32 finalColor = dc;
+                Color32 finalColor;
 
-                // If NPC-claimed and nearly depleted darken / redden
-                if (d.ClaimedByNpcId.HasValue && d.RemainingUnits > 0)
+                if (depleted) finalColor = DepositDepleted;
+                else if (d.ClaimedByPlayer) finalColor = DepositPlayer;
+                else if (d.ClaimedByNpcId.HasValue) finalColor = DepositNpc;
+                else finalColor = DepositUnclaimed;
+
+                // If NPC-claimed and nearly depleted darken / redden (skip if already depleted)
+                if (!depleted && d.ClaimedByNpcId.HasValue && d.RemainingUnits > 0)
                 {
                     NpcMinerManager.NpcMiner npc = null;
 
@@ -512,7 +515,8 @@ namespace MineItUnity.Game.Map
             foreach (var d in s.Deposits.GetAllDeposits())
             {
                 if (!d.DiscoveredByPlayer) continue;
-                if (d.RemainingUnits <= 0) continue;
+
+                bool depleted = d.IsDepleted || (d.RemainingUnits <= 0);
 
                 int dx = d.CenterTx - clickTx;
                 int dy = d.CenterTy - clickTy;

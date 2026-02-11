@@ -115,6 +115,7 @@ namespace MineIt.Mining
             int radiusTiles,
             int maxDepthMeters,
             int sizeNoiseTiers,
+            int detectorTier,
             Random rng)
         {
             int minTx = scanCenterTx - radiusTiles;
@@ -141,6 +142,12 @@ namespace MineIt.Mining
                         if (d.RemainingUnits <= 0) continue;
                         if (d.DepthMeters > maxDepthMeters) continue;
 
+                        // ===== Artifact Tier Gating (Locked) =====
+                        // Artifacts appear in scan results ONLY if Detector Tier == 5.
+                        if (d.IsArtifact && detectorTier < 5)
+                            continue;
+                        // ========================================
+
                         int dx = d.CenterTx - scanCenterTx;
                         int dy = d.CenterTy - scanCenterTy;
                         if (dx * dx + dy * dy > r2) continue;
@@ -164,17 +171,29 @@ namespace MineIt.Mining
                             estTier = System.Math.Clamp(d.SizeTier + n, 1, 15);
                         }
 
+                        int distTilesInt = (int)System.Math.Round(distTiles);
+
                         results.Add(new ScanResult
                         {
                             DepositId = d.DepositId,
                             OreTypeId = d.OreTypeId,
                             CenterTx = d.CenterTx,
                             CenterTy = d.CenterTy,
+
                             DepthMeters = d.DepthMeters,
+
                             TrueSizeTier = d.SizeTier,
                             EstimatedSizeTier = estTier,
                             EstimatedSizeClass = SizeClassFromTier(estTier),
-                            SignalBars = bars
+
+                            SignalBars = bars,
+
+                            // NEW intelligence fields
+                            DistanceTiles = distTilesInt,
+                            IsArtifact = d.IsArtifact,
+                            ClaimedByPlayer = d.ClaimedByPlayer,
+                            ClaimedByNpcId = d.ClaimedByNpcId.HasValue ? d.ClaimedByNpcId.Value : -1,
+                            IsDepleted = d.IsDepleted || (d.RemainingUnits <= 0)
                         });
                     }
                 }

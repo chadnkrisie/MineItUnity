@@ -20,6 +20,11 @@ namespace MineItUnity.Game
         public WaypointManager Waypoints;
         public WorldMapController Map;
 
+        [Header("Player Visual")]
+        [Tooltip("Optional prefab for the player sprite/animator. If null, one is created at runtime.")]
+        public GameObject PlayerPrefab;
+
+
         private void Awake()
         {
             Screen.fullScreenMode = FullScreenMode.FullScreenWindow;
@@ -27,8 +32,18 @@ namespace MineItUnity.Game
 
             Application.targetFrameRate = 60;
 
-            _session = new GameSession();
-            _session.InitializeNewGame(seed: 12345);
+            try
+            {
+                _session = new GameSession();
+                _session.InitializeNewGame(seed: 12345);
+            }
+            catch (System.Exception ex)
+            {
+                Debug.LogError($"GameController Awake failed to initialize GameSession: {ex}");
+                _session = null!;
+                enabled = false; // stop Update spam so the first real exception is visible
+                return;
+            }
 
             if (Waypoints == null)
                 Waypoints = FindObjectOfType<WaypointManager>();
@@ -36,17 +51,34 @@ namespace MineItUnity.Game
             if (Map == null)
                 Map = FindObjectOfType<WorldMapController>();
 
-            // Simple player marker (placeholder sprite)
-            var go = new GameObject("PlayerMarker");
-            _playerMarker = go.transform;
+            // Player visual (presentation-only)
+            if (PlayerPrefab != null)
+            {
+                var go = Instantiate(PlayerPrefab);
+                go.name = "Player";
+                _playerMarker = go.transform;
+            }
+            else
+            {
+                // Fallback: create a simple runtime player object
+                var go = new GameObject("Player");
+                _playerMarker = go.transform;
 
-            var sr = go.AddComponent<SpriteRenderer>();
-            sr.sprite = CreateDebugSprite();
-            sr.sortingOrder = 10;
+                var sr = go.AddComponent<SpriteRenderer>();
+                sr.sortingOrder = 10;
+
+                go.AddComponent<MineItUnity.Game.Player.PlayerSpriteAnimator>();
+            }
         }
 
         private void Update()
         {
+            if (_session == null)
+            {
+                // If Awake failed, Update would otherwise spam NRE every frame.
+                return;
+            }
+
             _accumulator += Time.unscaledDeltaTime;
             if (_accumulator > 0.25) _accumulator = 0.25;
 

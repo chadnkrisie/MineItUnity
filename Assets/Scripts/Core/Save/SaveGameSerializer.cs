@@ -74,7 +74,8 @@ namespace MineIt.Save
 
                     ClaimedByPlayer = d.ClaimedByPlayer,
                     ClaimedByNpcId = d.ClaimedByNpcId.HasValue ? d.ClaimedByNpcId.Value : -1,
-                    DiscoveredByPlayer = d.DiscoveredByPlayer
+                    DiscoveredByPlayer = d.DiscoveredByPlayer,
+                    IsDepleted = d.IsDepleted
                 });
             }
 

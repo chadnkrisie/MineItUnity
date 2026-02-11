@@ -239,6 +239,35 @@ namespace MineIt.Simulation
         public double ScanCooldownRemainingSeconds { get; private set; }
         public double ScanCooldownMaxSeconds => Player.DetectorCooldownSeconds;
 
+        // ===== Contested Window / Afterglow (Per-Deposit, Locked) =====
+        // Each scan creates an afterglow on each detected deposit for 90 seconds.
+        // NPCs may claim ONLY deposits that are:
+        //   - discovered by player, and
+        //   - currently within that deposit’s afterglow expiry window, and
+        //   - were revealed by a scan (i.e., entered/extended by scan scheduling here).
+        public const double ContestedWindowTotalSeconds = 90.0;
+
+        // Deterministic scan sequence counter (increments only on successful scans).
+        private int _scanSequence;
+
+        // Per-deposit afterglow + scheduled NPC claim attempt.
+        private readonly Dictionary<int, ContestedDeposit> _contestedDeposits = new Dictionary<int, ContestedDeposit>();
+
+        private struct ContestedDeposit
+        {
+            public int DepositId;
+            public int NpcId;
+
+            // Absolute timestamps in Clock.TotalRealSeconds space
+            public double WindowEndRealSeconds; // now + 90 when revealed (may be extended)
+            public double ClaimAtRealSeconds;   // now + deterministic delay (15..60) at first reveal
+        }
+
+        // HUD helpers (computed in StepNpcAfterglowClaims)
+        public int AfterglowActiveSiteCount { get; private set; }
+        public double AfterglowMaxRemainingSeconds { get; private set; }
+        // ============================================================
+
         // ===== Claim prompt + channel (NEW) =====
         public const double ClaimChannelTotalSeconds = 3.0;
 
@@ -358,7 +387,7 @@ namespace MineIt.Simulation
             _extractKgCarry = 0.0;
             ExtractKgRemainder = 0.0;
 
-            Credits = 100; // MVP start
+            Credits = 10000000; // MVP start
         }
 
         public void Update(double dtSeconds, InputSnapshot input)
@@ -426,6 +455,9 @@ namespace MineIt.Simulation
 
             // 8.5) NPC miners (headless competition)
             StepNpcMiners(dtSeconds);
+
+            // 8.75) NPC afterglow claims (contested window)
+            StepNpcAfterglowClaims();
 
             // 9) Timers
             StepTimers(dtSeconds);
@@ -580,18 +612,35 @@ namespace MineIt.Simulation
                     radiusTiles: Player.DetectorRadiusTiles,
                     maxDepthMeters: Player.DetectorMaxDepthMeters,
                     sizeNoiseTiers: Player.DetectorSizeNoiseTiers,
+                    detectorTier: Player.DetectorTier,
                     rng: _scanRng);
 
-                // Sort scan results by priority (highest first)
+                // Enrich scan intelligence tags (NPC/Deep/Urgent/Warning/Artifact/Depleted + ETA)
+                EnrichScanResultsWithTagsAndEta();
+
+                // Sort scan results by locked rules:
+                // - Uncollected artifacts always above non-artifacts
+                // - Otherwise by PriorityScore (highest first)
                 LastScanResults.Sort((a, b) =>
                 {
-                    double pa = a.ComputePriorityScore();
-                    double pb = b.ComputePriorityScore();
+                    bool aArt = a != null && a.IsArtifact;
+                    bool bArt = b != null && b.IsArtifact;
+
+                    if (aArt != bArt)
+                        return aArt ? -1 : 1;
+
+                    double pa = a != null ? a.ComputePriorityScore() : double.NegativeInfinity;
+                    double pb = b != null ? b.ComputePriorityScore() : double.NegativeInfinity;
                     return pb.CompareTo(pa);
                 });
 
+                // Mark discovered
                 foreach (var sr in LastScanResults)
                     MarkDepositDiscoveredById(sr.DepositId);
+
+                // ---- NEW: Schedule per-deposit afterglow + deterministic NPC claims ----
+                ScheduleAfterglowForLastScanDeposits();
+                // ----------------------------------------------------------------------
 
                 ScanCooldownRemainingSeconds = Player.DetectorCooldownSeconds;
                 scanExecuted = true;
@@ -763,6 +812,86 @@ namespace MineIt.Simulation
             }
         }
 
+        private void EnrichScanResultsWithTagsAndEta()
+        {
+            var list = LastScanResults;
+            if (list == null || list.Count == 0) return;
+
+            // Locked thresholds (architecture)
+            const double urgentSec = 180.0;
+            const double warningSec = 420.0;
+
+            int pTx = (int)Math.Floor(Player.PositionX);
+            int pTy = (int)Math.Floor(Player.PositionY);
+
+            for (int i = 0; i < list.Count; i++)
+            {
+                var r = list[i];
+                if (r == null) continue;
+
+                // Reset tags
+                r.TagNpc = false;
+                r.TagDeep = false;
+                r.TagUrgent = false;
+                r.TagWarning = false;
+                r.TagArtifact = false;
+                r.TagDepleted = false;
+                r.DepletionEtaSeconds = -1.0;
+
+                // Artifact / depleted
+                if (r.IsArtifact) r.TagArtifact = true;
+                if (r.IsDepleted) r.TagDepleted = true;
+
+                // NPC tag
+                if (r.ClaimedByNpcId >= 0) r.TagNpc = true;
+
+                // Deep tag = exceeds current extractor depth capability (player guidance)
+                if (r.DepthMeters > Player.ExtractorMaxDepthMeters) r.TagDeep = true;
+
+                // If NPC claimed, estimate depletion ETA using NPC extraction rate (deterministic)
+                if (r.ClaimedByNpcId >= 0 && Npcs != null && Deposits != null)
+                {
+                    var d = Deposits.TryGetDepositById(r.DepositId);
+                    if (d != null && d.RemainingUnits > 0)
+                    {
+                        // Find NPC object by id
+                        NpcMinerManager.NpcMiner npc = null;
+                        var npcs = Npcs.Npcs;
+                        if (npcs != null)
+                        {
+                            for (int n = 0; n < npcs.Count; n++)
+                            {
+                                if (npcs[n].NpcId == r.ClaimedByNpcId)
+                                {
+                                    npc = npcs[n];
+                                    break;
+                                }
+                            }
+                        }
+
+                        if (npc != null)
+                        {
+                            double rate = Npcs.GetNpcExtractionRateKgPerSec(npc, d.OreTypeId);
+                            double eta = d.EstimateSecondsToDeplete(rate);
+
+                            if (!double.IsInfinity(eta))
+                                r.DepletionEtaSeconds = eta;
+
+                            if (eta > 0 && eta < urgentSec) r.TagUrgent = true;
+                            else if (eta > 0 && eta < warningSec) r.TagWarning = true;
+                        }
+                    }
+                }
+
+                // DistanceTiles should already be set by DepositManager; if not, recompute defensively.
+                if (r.DistanceTiles <= 0)
+                {
+                    int dx = r.CenterTx - pTx;
+                    int dy = r.CenterTy - pTy;
+                    r.DistanceTiles = (int)Math.Round(Math.Sqrt(dx * dx + dy * dy));
+                }
+            }
+        }
 
         private void PopulateDepositsForActiveChunks()
         {
@@ -932,6 +1061,12 @@ namespace MineIt.Simulation
             if (d.RemainingUnits <= 0) return false;
             if (!d.ClaimedByPlayer) return false;
             if (d.ClaimedByNpcId.HasValue) return false; // future-proof
+                                                         
+            // ===== Artifact Tier Gating (Locked) =====
+            // Artifacts are extractable ONLY with Extractor Tier 5.
+            if (d.IsArtifact && Player.ExtractorTier < 5)
+                return false;
+            // ========================================
 
             if (d.DepthMeters > Player.ExtractorMaxDepthMeters) return false;
 
@@ -965,7 +1100,13 @@ namespace MineIt.Simulation
             // ===== Artifact extraction (quest items) =====
             if (d.IsArtifact)
             {
-                // MVP: allow extraction if in range and player-claimed (already enforced by caller)
+                // Locked: require Extractor Tier 5 to extract artifacts.
+                if (Player.ExtractorTier < 5)
+                {
+                    StopExtraction("ARTIFACT LOCKED (need Extractor T5)");
+                    return;
+                }
+                
                 // Add to backpack as a unique artifact ID, not as ore.
 
                 string aid = d.ArtifactId ?? "";
@@ -973,6 +1114,7 @@ namespace MineIt.Simulation
 
                 // Deplete deposit immediately (artifact is one-time)
                 d.RemainingUnits = 0;
+                d.IsDepleted = true;
 
                 StopExtraction(added
                     ? $"ARTIFACT SECURED: {aid}"
@@ -1032,10 +1174,11 @@ namespace MineIt.Simulation
 
             ExtractKgRemainder = _extractKgCarry;
 
-            // Auto-stop if deposit depleted
+            // Auto-stop if deposit depleted (archive marker)
             if (d.RemainingUnits <= 0)
             {
                 d.RemainingUnits = 0;
+                d.IsDepleted = true;
                 StopExtraction("EXTRACT STOP (depleted)");
             }
         }
@@ -1201,6 +1344,7 @@ namespace MineIt.Simulation
                 d.ClaimedByPlayer = sd.ClaimedByPlayer;
                 d.ClaimedByNpcId = (sd.ClaimedByNpcId >= 0) ? sd.ClaimedByNpcId : (int?)null;
                 d.DiscoveredByPlayer = sd.DiscoveredByPlayer;
+                d.IsDepleted = sd.IsDepleted || (d.RemainingUnits <= 0);
             }
 
             // NPC miners
@@ -1233,9 +1377,171 @@ namespace MineIt.Simulation
             LastActionFlashSeconds = 1.5;
         }
 
+        // ===== Contested Window / Afterglow helpers (NEW) =====
 
+        // ===== Contested Window / Afterglow helpers (Per-Deposit) =====
 
+        private void ScheduleAfterglowForLastScanDeposits()
+        {
+            // Increment only on successful scans (called from StepScan when scan executes).
+            _scanSequence++;
 
+            var results = LastScanResults;
+            if (results == null || results.Count == 0) return;
 
+            int npcCount = (Npcs != null) ? Npcs.NpcCount : 0;
+            if (npcCount <= 0) return;
+
+            double now = Clock.TotalRealSeconds;
+            double newEnd = now + ContestedWindowTotalSeconds;
+
+            for (int i = 0; i < results.Count; i++)
+            {
+                int depositId = results[i].DepositId;
+
+                var d = Deposits.TryGetDepositById(depositId);
+                if (d == null) continue;
+
+                // Must be a viable contested candidate
+                if (!d.DiscoveredByPlayer) continue;
+                if (d.RemainingUnits <= 0) continue;
+                if (d.IsArtifact) continue;            // locked: NPC never contest artifacts
+                if (d.ClaimedByPlayer) continue;
+                if (d.ClaimedByNpcId.HasValue) continue;
+
+                if (_contestedDeposits.TryGetValue(depositId, out var cd))
+                {
+                    // Already contested: extend window, but DO NOT reroll NPC or delay.
+                    if (newEnd > cd.WindowEndRealSeconds)
+                        cd.WindowEndRealSeconds = newEnd;
+
+                    _contestedDeposits[depositId] = cd;
+                }
+                else
+                {
+                    // First time this deposit becomes vulnerable: choose deterministic delay + npc.
+                    double delay = ComputeDeterministicDelaySeconds(_seed, depositId, _scanSequence); // 15..60
+                    int npcId = ComputeDeterministicNpcId(_seed, depositId, _scanSequence, npcCount); // 1..NpcCount
+
+                    _contestedDeposits[depositId] = new ContestedDeposit
+                    {
+                        DepositId = depositId,
+                        NpcId = npcId,
+                        WindowEndRealSeconds = newEnd,
+                        ClaimAtRealSeconds = now + delay
+                    };
+                }
+            }
+        }
+
+        private void StepNpcAfterglowClaims()
+        {
+            // Compute HUD helpers every frame (cheap; dictionary is small).
+            AfterglowActiveSiteCount = 0;
+            AfterglowMaxRemainingSeconds = 0.0;
+
+            if (_contestedDeposits.Count == 0) return;
+            if (Npcs == null || Deposits == null) { _contestedDeposits.Clear(); return; }
+
+            double now = Clock.TotalRealSeconds;
+
+            _tmpContestedKeys.Clear();
+            foreach (var kv in _contestedDeposits)
+                _tmpContestedKeys.Add(kv.Key);
+
+            for (int i = 0; i < _tmpContestedKeys.Count; i++)
+            {
+                int depositId = _tmpContestedKeys[i];
+
+                if (!_contestedDeposits.TryGetValue(depositId, out var cd))
+                    continue;
+
+                // Expired? Drop.
+                if (now > cd.WindowEndRealSeconds)
+                {
+                    _contestedDeposits.Remove(depositId);
+                    continue;
+                }
+
+                // Still active (for HUD)
+                AfterglowActiveSiteCount++;
+                double rem = cd.WindowEndRealSeconds - now;
+                if (rem > AfterglowMaxRemainingSeconds)
+                    AfterglowMaxRemainingSeconds = rem;
+
+                // Not due yet?
+                if (now < cd.ClaimAtRealSeconds)
+                    continue;
+
+                // Re-check eligibility at claim time (player may have claimed, etc.)
+                var d = Deposits.TryGetDepositById(depositId);
+                if (d == null)
+                {
+                    _contestedDeposits.Remove(depositId);
+                    continue;
+                }
+
+                if (!d.DiscoveredByPlayer ||
+                    d.RemainingUnits <= 0 ||
+                    d.IsArtifact ||
+                    d.ClaimedByPlayer ||
+                    d.ClaimedByNpcId.HasValue)
+                {
+                    // Not claimable anymore; consume.
+                    _contestedDeposits.Remove(depositId);
+                    continue;
+                }
+
+                // Attempt claim (one-shot). If succeeds, NPC starts extracting via its normal Tick.
+                bool ok = Npcs.TryClaimAndStartExtraction(cd.NpcId, cd.DepositId, Deposits);
+
+                // Either way, consume the scheduled claim so we don't retry.
+                _contestedDeposits.Remove(depositId);
+
+                // Optional: you can emit a core event here later if you want UI/audio hooks:
+                // if (ok) NpcClaimedDeposit?.Invoke(cd.DepositId, cd.NpcId);
+            }
+        }
+
+        // Reused list (avoid modifying dictionary during enumeration)
+        private readonly List<int> _tmpContestedKeys = new List<int>(128);
+
+        // Deterministic helpers unchanged
+        private static double ComputeDeterministicDelaySeconds(int seed, int depositId, int scanSeq)
+        {
+            uint h = Hash3((uint)seed, (uint)depositId, (uint)scanSeq);
+            double u01 = (h & 0x00FFFFFFu) / (double)0x01000000;
+            return 15.0 + (u01 * 45.0); // 15..60
+        }
+
+        private static int ComputeDeterministicNpcId(int seed, int depositId, int scanSeq, int npcCount)
+        {
+            if (npcCount <= 0) return 1;
+            uint h = Hash3((uint)seed ^ 0xA6C1D2E3u, (uint)depositId, (uint)scanSeq);
+            int idx = (int)(h % (uint)npcCount);
+            return idx + 1;
+        }
+
+        private static uint Hash3(uint a, uint b, uint c)
+        {
+            uint x = 0x9E3779B9u;
+            x ^= a + 0x85EBCA6Bu + (x << 6) + (x >> 2);
+            x ^= b + 0xC2B2AE35u + (x << 6) + (x >> 2);
+            x ^= c + 0x27D4EB2Fu + (x << 6) + (x >> 2);
+
+            x ^= x >> 16;
+            x *= 0x7FEB352Du;
+            x ^= x >> 15;
+            x *= 0x846CA68Bu;
+            x ^= x >> 16;
+            return x;
+        }
+
+        // ============================================================
+
+        // Reused list to avoid allocations
+        private readonly List<int> _tmpDueClaims = new List<int>(64);
+
+        // =====================================================
     }
 }

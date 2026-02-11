@@ -12,7 +12,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 9d1514134bc4fbd41bb739b1b9a49231, type: 3}
   m_Name: RockTile
   m_EditorClassIdentifier: 
-  m_DefaultSprite: {fileID: 7482667652216324306, guid: 1669116bfc9667a4bb06225c6b034d87, type: 3}
+  m_DefaultSprite: {fileID: 21300000, guid: 6049b09a85e23a94b99b3eea817cbafe, type: 3}
   m_DefaultGameObject: {fileID: 0}
   m_DefaultColliderType: 1
   m_TilingRules: []

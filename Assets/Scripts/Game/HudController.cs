@@ -134,41 +134,49 @@ namespace MineItUnity.Game
             // Scan intelligence
             var results = s.LastScanResults;
             int hits = results != null ? results.Count : 0;
+
             _sb.Append("Scan Hits: ").Append(hits).AppendLine();
 
             if (results != null && results.Count > 0)
             {
-                int show = Mathf.Min(3, results.Count);
+                int show = Mathf.Min(5, results.Count);
 
                 for (int i = 0; i < show; i++)
                 {
                     var r = results[i];
+                    if (r == null) continue;
 
-                    int dx = r.CenterTx - pTx;
-                    int dy = r.CenterTy - pTy;
-                    int dist = Mathf.RoundToInt(Mathf.Sqrt(dx * dx + dy * dy));
+                    _sb.Append(i == 0 ? "> " : "  ");
 
-                    bool npcMining = false;
-                    var dep = s.Deposits.TryGetDepositById(r.DepositId);
-                    if (dep != null && dep.ClaimedByNpcId.HasValue)
-                        npcMining = true;
-
-                    _sb.Append(i == 0 ? "▶ " : "  ");
-                    _sb.Append(r.OreTypeId.ToUpper())
+                    // Ore / Artifact label
+                    string label = r.IsArtifact ? "ARTIFACT" : r.OreTypeId.ToUpperInvariant();
+                    _sb.Append(label)
                        .Append("  ")
                        .Append(r.EstimatedSizeClass)
                        .Append("  ")
-                       .Append(dist).Append("t");
+                       .Append(r.DistanceTiles).Append("t");
 
-                    if (npcMining)
-                        _sb.Append("  NPC");
+                    // Tags
+                    if (r.TagNpc) _sb.Append("  NPC");
+                    if (r.TagDeep) _sb.Append("  DEEP");
+                    if (r.TagWarning) _sb.Append("  WARN");
+                    if (r.TagUrgent) _sb.Append("  URG");
+                    if (r.TagDepleted) _sb.Append("  DEPL");
 
-                    if (r.DepthMeters > s.Player.DetectorMaxDepthMeters)
-                        _sb.Append("  DEEP");
+                    // ETA (NPC depletion)
+                    if (r.DepletionEtaSeconds > 0)
+                    {
+                        _sb.Append("  ETA ").Append(FormatEta(r.DepletionEtaSeconds));
+                    }
+
+                    // Priority (debug-visible)
+                    _sb.Append("  P=").Append(r.ComputePriorityScore().ToString("0.000"));
 
                     _sb.AppendLine();
                 }
             }
+
+
 
             // Backpack + Credits
             if (s.Backpack != null)
@@ -217,6 +225,16 @@ namespace MineItUnity.Game
                     _sb.Append("Scan CD: ").Append(s.ScanCooldownRemainingSeconds.ToString("0.0")).Append("s").AppendLine();
                 else
                     _sb.Append("Scan READY").AppendLine();
+            }
+            // Afterglow / contested window (scan broadcast risk) — per-deposit
+            if (s.AfterglowActiveSiteCount > 0 && s.AfterglowMaxRemainingSeconds > 0.0)
+            {
+                _sb.Append("Afterglow: ")
+                   .Append(Mathf.CeilToInt((float)s.AfterglowMaxRemainingSeconds))
+                   .Append("s")
+                   .Append("  Sites: ")
+                   .Append(s.AfterglowActiveSiteCount)
+                   .AppendLine();
             }
 
             if (s.ClaimInProgress)

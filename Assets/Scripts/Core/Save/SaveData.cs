@@ -83,6 +83,8 @@ namespace MineIt.Save
         public int ClaimedByNpcId;
 
         public bool DiscoveredByPlayer;
+        public bool IsDepleted;
+
     }
 
     [Serializable]

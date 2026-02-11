@@ -20,6 +20,10 @@
         public int SizeTier { get; internal set; }          // 1..15
         public int RemainingUnits { get; internal set; }
 
+        // Archived marker state (Locked): once depleted, stays marked for trust/history.
+        public bool IsDepleted { get; internal set; }
+
+
         public int? ClaimedByNpcId { get; internal set; }
         public bool ClaimedByPlayer { get; internal set; }
 

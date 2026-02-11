@@ -41,6 +41,48 @@ namespace MineIt.Mining
 
         public int NpcCount => _npcs.Count;
 
+        /// <summary>
+        /// Called by GameSession afterglow scheduler:
+        /// Attempts to claim the deposit for the specified NPC and immediately start extraction.
+        /// Returns true only if the claim succeeded.
+        /// </summary>
+        public bool TryClaimAndStartExtraction(int npcId, int depositId, DepositManager deposits)
+        {
+            if (deposits == null) return false;
+            if (depositId == 0) return false;
+
+            // Find NPC
+            NpcMiner npc = null;
+            for (int i = 0; i < _npcs.Count; i++)
+            {
+                if (_npcs[i].NpcId == npcId)
+                {
+                    npc = _npcs[i];
+                    break;
+                }
+            }
+            if (npc == null) return false;
+
+            var d = deposits.TryGetDepositById(depositId);
+            if (d == null) return false;
+
+            // Eligibility (locked rules)
+            if (d.RemainingUnits <= 0) return false;
+            if (d.IsArtifact) return false;           // NPC never claim artifacts
+            if (d.ClaimedByPlayer) return false;
+            if (d.ClaimedByNpcId.HasValue) return false;
+
+            // Claim
+            d.ClaimedByNpcId = npc.NpcId;
+
+            // Start extraction
+            npc.TargetDepositId = depositId;
+            npc.ExtractKgCarry = 0.0;
+
+            return true;
+        }
+
+
         public NpcMinerManager(int seed)
         {
             _seed = seed;
@@ -87,15 +129,10 @@ namespace MineIt.Mining
             {
                 var npc = _npcs[i];
 
-                // If has target, extract; else decide
+                // Afterglow system assigns targets externally.
+                // If the NPC has a target, it extracts; otherwise it idles.
                 if (npc.TargetDepositId != 0)
-                {
                     TickExtraction(dtSeconds, deposits, npc);
-                }
-                else
-                {
-                    TickDecision(dtSeconds, deposits, npc);
-                }
             }
         }
 
@@ -182,6 +219,7 @@ namespace MineIt.Mining
             if (d.RemainingUnits <= 0)
             {
                 d.RemainingUnits = 0;
+                d.IsDepleted = true;
                 npc.TargetDepositId = 0;
                 npc.ExtractKgCarry = 0.0;
                 return;
@@ -234,6 +272,8 @@ namespace MineIt.Mining
             if (d.RemainingUnits <= 0)
             {
                 d.RemainingUnits = 0;
+                d.IsDepleted = true;
+
                 npc.TargetDepositId = 0;
                 npc.ExtractKgCarry = 0.0;
             }
